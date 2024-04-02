@@ -105,6 +105,7 @@ pub enum ExtensionType {
     SignatureAlgorithmsCert = 50,
     KeyShare = 51,
 }
+
 /// By using `From` trait, we can convert `u16` to `ExtensionType`, e.g. by using `.into()`
 impl From<u16> for ExtensionType {
     fn from(value: u16) -> Self {
@@ -138,18 +139,20 @@ impl From<u16> for ExtensionType {
         }
     }
 }
+
 /// `ExtensionData` is a wrapper for any data in the extension
 /// TODO not all extension data types are implemented or added
+/// Missing: cookie, signature_algorithms_cert, supported_groups, pre_shared_key,
 #[derive(Debug, Clone)]
 pub enum ExtensionData {
-    ServerName(ServerNameList),
-    SupportedGroups(NamedGroupList),
-    SignatureAlgorithms(SupportedSignatureAlgorithms),
-    SupportedVersions(SupportedVersions),
-    KeyShareClientHello(KeyShareClientHello),
+    ServerName(ServerNameList),                        // Needs decoder
+    SupportedGroups(NamedGroupList),                   // Needs decoder
+    SignatureAlgorithms(SupportedSignatureAlgorithms), // Needs decoder, SignatureScheme "inside" it needs decoder
+    SupportedVersions(SupportedVersions),              // Decoder added, untested
+    KeyShareClientHello(KeyShareClientHello), // Needs decoder, KeyShare "inside" it needs decoder
     KeyShareServerHello(KeyShareServerHello),
-    PskKeyExchangeModes(PskKeyExchangeModes),
-    Unserialized(Vec<u8>), // Placeholder for unimplemented extension data
+    PskKeyExchangeModes(PskKeyExchangeModes), // Needs decoder
+    Unserialized(Vec<u8>),                    // Placeholder for unimplemented extension data
 }
 
 impl ByteSerializable for ExtensionData {
@@ -220,10 +223,50 @@ impl ByteSerializable for SupportedVersions {
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         // It takes at least 3 bytes to present ClientHello
         // Not the best for validation, but it's a start
+        // NOTE: What if len() is 0
         if bytes.len() > 2 {
-            todo!("We don't support receiving ClientHello")
+            // TODO: Needs to be tested. todo!("We don't support receiving ClientHello")
+            // 1 byte length determinant for `versions`
+            let length = bytes.get_u8().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid suggested versions length",
+                )
+            })?;
+            // Suggested versions are two bytes each
+            // This means length should be % 2 == 0
+            // NOTE: length should be checked
+            // NOTE: I have feeling this loop will cause problems in the future
+            let mut i = 0;
+            let mut versions = Vec::new();
+
+            // Not the best way but a good start
+            while i < length {
+                let version = bytes.get_u16().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid suggested version",
+                    )
+                })?;
+                versions.push(version);
+                i += 2
+            }
+
+            Ok(Box::new(SupportedVersions {
+                version: VersionKind::Suggested(versions),
+            }))
         } else {
-            todo!("Serialize Selected variant")
+            // TODO: Needs to be tested. todo!("Serialize Selected variant");
+            // NOTE: Selected version must be one in the list sent by client. Case where it isn't shoud never happen
+            // but should be checked just in case. That should probably be done in main.rs or handshake.rs. Not sure yet.
+            // Server returns the selected version which is represented with two bytes
+            let selected_version = bytes.get_u16().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid selected version")
+            })?;
+
+            Ok(Box::new(SupportedVersions {
+                version: VersionKind::Selected(selected_version),
+            }))
         }
     }
 }
@@ -241,6 +284,7 @@ pub struct ServerName {
     pub name_type: NameType,
     pub host_name: HostName,
 }
+
 impl std::fmt::Display for ServerName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = String::from_utf8_lossy(&self.host_name);
@@ -253,13 +297,16 @@ impl std::fmt::Display for ServerName {
 pub enum NameType {
     HostName = 0,
 }
+
 /// `HostName` is a byte string using ASCII encoding of host without a trailing dot
 type HostName = Vec<u8>;
+
 /// `ServerNameList` is a list of `ServerName` structures, where maximum length be `u16::MAX` (2 bytes)
 #[derive(Debug, Clone)]
 pub struct ServerNameList {
     pub server_name_list: Vec<ServerName>,
 }
+
 impl std::fmt::Display for ServerNameList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for server_name in &self.server_name_list {
@@ -331,6 +378,7 @@ pub enum SignatureScheme {
     /* Reserved Code Points */
     // PrivateUse(0xFE00..0xFFFF),
 }
+
 impl ByteSerializable for SignatureScheme {
     //noinspection DuplicatedCode
     fn as_bytes(&self) -> Option<Vec<u8>> {
@@ -349,6 +397,7 @@ impl ByteSerializable for SignatureScheme {
 pub struct SupportedSignatureAlgorithms {
     pub supported_signature_algorithms: Vec<SignatureScheme>, // length of the data can be 2..2^16-2
 }
+
 impl ByteSerializable for SupportedSignatureAlgorithms {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
@@ -388,6 +437,7 @@ pub enum NamedGroup {
     // ffdhe_private_use(0x01FC..0x01FF),
     // ecdhe_private_use(0xFE00..0xFEFF),
 }
+
 impl ByteSerializable for NamedGroup {
     //noinspection DuplicatedCode
     fn as_bytes(&self) -> Option<Vec<u8>> {
@@ -422,6 +472,7 @@ impl ByteSerializable for NamedGroup {
 pub struct NamedGroupList {
     pub named_group_list: Vec<NamedGroup>, // (2 bytes to present)
 }
+
 impl ByteSerializable for NamedGroupList {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
@@ -451,6 +502,7 @@ pub struct KeyShareEntry {
     pub group: NamedGroup,
     pub key_exchange: Vec<u8>, // (2 bytes to present the length)
 }
+
 impl ByteSerializable for KeyShareEntry {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
