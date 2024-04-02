@@ -1,9 +1,12 @@
 //! # TLS Extensions and their encoding/decoding
 //!
 //! Includes `ByteSerializable` trait for converting structures into bytes and constructing again.
+use core::panic;
+
 use crate::handshake::ProtocolVersion;
 use crate::parser::ByteParser;
 use ::log::{debug, warn};
+use log::error;
 
 /// `ByteSerializable` trait is used to serialize and deserialize the struct into bytes
 pub trait ByteSerializable {
@@ -147,7 +150,7 @@ impl From<u16> for ExtensionType {
 pub enum ExtensionData {
     ServerName(ServerNameList),      // Decoder added, untested
     SupportedGroups(NamedGroupList), // Needs decoder
-    SignatureAlgorithms(SupportedSignatureAlgorithms), // Needs decoder, SignatureScheme "inside" it needs decoder
+    SignatureAlgorithms(SupportedSignatureAlgorithms), // Needs decoder, SignatureScheme decoder added, untested
     SupportedVersions(SupportedVersions),              // Decoder added, untested
     KeyShareClientHello(KeyShareClientHello), // Needs decoder, KeyShare "inside" it needs decoder
     KeyShareServerHello(KeyShareServerHello),
@@ -432,8 +435,33 @@ impl ByteSerializable for SignatureScheme {
         }
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement SignatureScheme from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement SignatureScheme from_bytes")
+        // SignatureScheme value is 2 bytes
+        // NOTE: This feels very dumb, but I am not familiar with Rust. So much repetition, most likely pointless
+        let signature_scheme = bytes.get_u16();
+        match signature_scheme {
+            Some(0x0401) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha256)),
+            Some(0x0501) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha384)),
+            Some(0x0601) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha512)),
+            Some(0x0403) => Ok(Box::new(SignatureScheme::EcdsaSecp256r1Sha256)),
+            Some(0x0503) => Ok(Box::new(SignatureScheme::EcdsaSecp384r1Sha384)),
+            Some(0x0603) => Ok(Box::new(SignatureScheme::EcdsaSecp521r1Sha512)),
+            Some(0x0804) => Ok(Box::new(SignatureScheme::RsaPssRsaeSha256)),
+            Some(0x0805) => Ok(Box::new(SignatureScheme::RsaPssRsaeSha384)),
+            Some(0x0806) => Ok(Box::new(SignatureScheme::RsaPssRsaeSha512)),
+            Some(0x0807) => Ok(Box::new(SignatureScheme::Ed25519)), // NOTE The only supported signature scheme
+            Some(0x0808) => Ok(Box::new(SignatureScheme::Ed448)),
+            Some(0x0809) => Ok(Box::new(SignatureScheme::RsaPssPssSha256)),
+            Some(0x080a) => Ok(Box::new(SignatureScheme::RsaPssPssSha384)),
+            Some(0x080b) => Ok(Box::new(SignatureScheme::RsaPssPssSha512)),
+            Some(0x0201) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha1)),
+            Some(0x0203) => Ok(Box::new(SignatureScheme::EcdsaSha1)),
+            _ => {
+                error!("Unknown SignatureScheme: {:?}", signature_scheme);
+                todo!("Check standard what to do")
+            }
+        }
     }
 }
 #[derive(Debug, Clone)]
