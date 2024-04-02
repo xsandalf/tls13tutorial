@@ -145,8 +145,8 @@ impl From<u16> for ExtensionType {
 /// Missing: cookie, signature_algorithms_cert, supported_groups, pre_shared_key,
 #[derive(Debug, Clone)]
 pub enum ExtensionData {
-    ServerName(ServerNameList),                        // Needs decoder
-    SupportedGroups(NamedGroupList),                   // Needs decoder
+    ServerName(ServerNameList),      // Decoder added, untested
+    SupportedGroups(NamedGroupList), // Needs decoder
     SignatureAlgorithms(SupportedSignatureAlgorithms), // Needs decoder, SignatureScheme "inside" it needs decoder
     SupportedVersions(SupportedVersions),              // Decoder added, untested
     KeyShareClientHello(KeyShareClientHello), // Needs decoder, KeyShare "inside" it needs decoder
@@ -342,8 +342,51 @@ impl ByteSerializable for ServerNameList {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement ServerNameList from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement ServerNameList from_bytes")
+        // 2 byte length determinant for the whole `ServerNameList`
+        let list_length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid server name list length",
+            )
+        })?;
+
+        // Stupid loop time
+        let mut i = 0;
+        let mut server_names = Vec::new();
+
+        while i < list_length {
+            // 1 byte for name_type, which is always 0
+            let _name_type = bytes.get_u8().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid server name name type",
+                )
+            })?;
+
+            // 2 byte length determinant for the ASCII byte presentation of the name
+            let length = bytes.get_u16().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid server name host name length",
+                )
+            })?;
+
+            // Should this have error check, or should that be in the get_bytes() method
+            let host_name = bytes.get_bytes(length as usize);
+
+            server_names.push(ServerName {
+                name_type: NameType::HostName,
+                host_name: host_name,
+            });
+            // 1 byte for name_type + length of host_name
+            i += (1 + length)
+        }
+
+        Ok(Box::new(ServerNameList {
+            server_name_list: server_names,
+        }))
     }
 }
 
