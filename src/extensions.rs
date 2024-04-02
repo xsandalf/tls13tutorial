@@ -152,6 +152,7 @@ pub enum ExtensionData {
     KeyShareClientHello(KeyShareClientHello), // Decoder added, untested. KeyShare decoder added, untested
     KeyShareServerHello(KeyShareServerHello),
     PskKeyExchangeModes(PskKeyExchangeModes), // Decoder added, untested
+    Cookie(Cookie),                           // Encoder added, untested. Decoder added, untested
     Unserialized(Vec<u8>),                    // Placeholder for unimplemented extension data
 }
 
@@ -173,6 +174,7 @@ impl ByteSerializable for ExtensionData {
             ExtensionData::PskKeyExchangeModes(psk_key_exchange_modes) => {
                 psk_key_exchange_modes.as_bytes()
             }
+            ExtensionData::Cookie(cookie) => cookie.as_bytes(),
             ExtensionData::Unserialized(data) => Some(data.clone()),
         }
     }
@@ -374,11 +376,9 @@ impl ByteSerializable for ServerNameList {
             })?;
 
             // NOTE: Should this have error check, or should that be in the get_bytes() method
-            let host_name = bytes.get_bytes(length as usize);
-
             server_names.push(ServerName {
                 name_type: NameType::HostName,
-                host_name: host_name,
+                host_name: bytes.get_bytes(length as usize),
             });
             // 1 byte for name_type + length of host_name
             i += 1 + length
@@ -643,11 +643,9 @@ impl ByteSerializable for KeyShareEntry {
 
         // NOTE: Should this have error check, or should that be in the get_bytes() method
         // NOTE: Length should be checked
-        let key_exchange = bytes.get_bytes(length as usize);
-
         Ok(Box::new(KeyShareEntry {
             group: named_group,
-            key_exchange: key_exchange,
+            key_exchange: bytes.get_bytes(length as usize),
         }))
     }
 }
@@ -788,6 +786,42 @@ impl ByteSerializable for PskKeyExchangeModes {
         }
 
         Ok(Box::new(PskKeyExchangeModes { ke_modes: ke_modes }))
+    }
+}
+
+/// ## Cookie extension
+#[derive(Debug, Clone)]
+pub struct Cookie {
+    cookie: Vec<u8>, // (2 bytes to present the length)
+}
+
+impl ByteSerializable for Cookie {
+    fn as_bytes(&self) -> Option<Vec<u8>> {
+        // TODO: Needs to be tested. todo!("Implement Cookie as_bytes")
+        let mut bytes = Vec::new();
+        // 2 byte length determinant for the `cookie`
+        bytes.extend(
+            u16::try_from(self.cookie.len())
+                .ok()?
+                .to_be_bytes()
+                .as_ref(),
+        );
+        bytes.extend_from_slice(&self.cookie);
+        Some(bytes)
+    }
+
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement Cookie from_bytes")
+        // 2 byte length determinant for the `key_exchange`
+        let length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid cookie length")
+        })?;
+
+        // NOTE: Should this have error check, or should that be in the get_bytes() method
+        // NOTE: Length should be checked
+        Ok(Box::new(Cookie {
+            cookie: bytes.get_bytes(length as usize),
+        }))
     }
 }
 
