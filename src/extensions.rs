@@ -151,7 +151,7 @@ pub enum ExtensionData {
     SupportedVersions(SupportedVersions),              // Decoder added, untested
     KeyShareClientHello(KeyShareClientHello), // Decoder added, untested. KeyShare decoder added, untested
     KeyShareServerHello(KeyShareServerHello),
-    PskKeyExchangeModes(PskKeyExchangeModes), // Needs decoder
+    PskKeyExchangeModes(PskKeyExchangeModes), // Decoder added, untested
     Unserialized(Vec<u8>),                    // Placeholder for unimplemented extension data
 }
 
@@ -684,7 +684,7 @@ impl ByteSerializable for KeyShareClientHello {
         let length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid key exchange length",
+                "Invalid client shares length",
             )
         })?;
 
@@ -759,8 +759,35 @@ impl ByteSerializable for PskKeyExchangeModes {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement PskKeyExchangeModes from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement PskKeyExchangeModes from_bytes")
+        // 1 byte length determinant for `ke_modes`
+        let length = bytes.get_u8().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid ke modes length")
+        })?;
+
+        // NOTE: Stupid loop time
+        let mut i = 0;
+        let mut ke_modes = Vec::new();
+
+        // NOTE: Length should be checked
+        while i < length {
+            // PskKeyExchangeMode value is 1 byte
+            // NOTE: This feels very dumb, but I am not familiar with Rust
+            match bytes.get_u8().ok_or_else(ByteParser::insufficient_data)? {
+                0 => ke_modes.push(PskKeyExchangeMode::PskKe),
+                1 => ke_modes.push(PskKeyExchangeMode::PskDheKe),
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid pre-shared Key exchange mode",
+                    ))
+                }
+            }
+            i += 1
+        }
+
+        Ok(Box::new(PskKeyExchangeModes { ke_modes: ke_modes }))
     }
 }
 
