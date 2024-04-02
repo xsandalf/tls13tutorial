@@ -146,7 +146,7 @@ impl From<u16> for ExtensionType {
 #[derive(Debug, Clone)]
 pub enum ExtensionData {
     ServerName(ServerNameList),      // Decoder added, untested
-    SupportedGroups(NamedGroupList), // Needs decoder
+    SupportedGroups(NamedGroupList), // Decoder added, untested
     SignatureAlgorithms(SupportedSignatureAlgorithms), // Decoder added, untested. SignatureScheme decoder added, untested
     SupportedVersions(SupportedVersions),              // Decoder added, untested
     KeyShareClientHello(KeyShareClientHello), // Needs decoder, KeyShare "inside" it needs decoder
@@ -487,7 +487,7 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
             )
         })?;
 
-        // Stupid loop time
+        // NOTE: Stupid loop time
         let mut i = 0;
         let mut signature_schemes = Vec::new();
 
@@ -590,7 +590,7 @@ impl ByteSerializable for NamedGroupList {
             )
         })?;
 
-        // Stupid loop time
+        // NOTE: Stupid loop time
         let mut i = 0;
         let mut named_groups = Vec::new();
 
@@ -628,8 +628,27 @@ impl ByteSerializable for KeyShareEntry {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement KeyShareEntry from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement KeyShareEntry from_bytes")
+        // NOTE: I am not sure if this is a good idea
+        let named_group = *NamedGroup::from_bytes(bytes)?;
+
+        // 2 byte length determinant for the `key_exchange`
+        let length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid key exchange length",
+            )
+        })?;
+
+        // NOTE: Should this have error check, or should that be in the get_bytes() method
+        // NOTE: Length should be checked
+        let key_exchange = bytes.get_bytes(length as usize);
+
+        Ok(Box::new(KeyShareEntry {
+            group: named_group,
+            key_exchange: key_exchange,
+        }))
     }
 }
 
