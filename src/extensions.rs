@@ -59,22 +59,39 @@ impl Extension {
         let ext_data = bytes.get_bytes(ext_data_len as usize);
         let mut ext_bytes = ByteParser::from(ext_data);
         debug!("Extension data: {:?}", ext_bytes);
-        // let extension_data = match ext_type {
-        // TODO Implement the rest of the extension types
-        //     0 => ExtensionData::ServerName(*ServerNameList::from_bytes(&mut ext_bytes)?),
-        //     _ => {
-        //         warn!("Unknown ExtensionType: {}", ext_type);
-        //         return Err(std::io::Error::new(
-        //             std::io::ErrorKind::InvalidData,
-        //             "Invalid extension data",
-        //         ));
-        //     }
-        // };
+        let extension_data = match ext_type {
+            // TODO Implement the rest of the extension types
+            0 => ExtensionData::ServerName(*ServerNameList::from_bytes(&mut ext_bytes)?),
+            10 => ExtensionData::SupportedGroups(*NamedGroupList::from_bytes(&mut ext_bytes)?),
+            13 => ExtensionData::SignatureAlgorithms(*SupportedSignatureAlgorithms::from_bytes(
+                &mut ext_bytes,
+            )?),
+            43 => ExtensionData::SupportedVersions(*SupportedVersions::from_bytes(&mut ext_bytes)?),
+            44 => ExtensionData::Cookie(*Cookie::from_bytes(&mut ext_bytes)?),
+            45 => ExtensionData::PskKeyExchangeModes(*PskKeyExchangeModes::from_bytes(
+                &mut ext_bytes,
+            )?),
+            51 => ExtensionData::KeyShareServerHello(*KeyShareServerHello::from_bytes(
+                &mut ext_bytes,
+            )?), // Or ClientHello
+            _ => {
+                warn!("Unknown ExtensionType: {}", ext_type);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid extension data",
+                ));
+            }
+        };
         // Use placeholder `Unserialized` for now, not all extension data types are implemented
+        //Ok(Box::new(Extension {
+        //    origin,
+        //    extension_type: ext_type.into(),
+        //    extension_data: ExtensionData::Unserialized(ext_bytes.drain()),
+        //}))
         Ok(Box::new(Extension {
             origin,
             extension_type: ext_type.into(),
-            extension_data: ExtensionData::Unserialized(ext_bytes.drain()),
+            extension_data,
         }))
     }
 }
@@ -142,7 +159,9 @@ impl From<u16> for ExtensionType {
 
 /// `ExtensionData` is a wrapper for any data in the extension
 /// TODO not all extension data types are implemented or added
-/// Missing: cookie, signature_algorithms_cert, supported_groups, pre_shared_key,
+/// Missing: signature_algorithms_cert(?), pre-shared key(?)
+/// If no "signature_algorithms_cert" extension is present,
+/// then the "signature_algorithms" extension also applies to signatures appearing in certificates., pre_shared_key
 #[derive(Debug, Clone)]
 pub enum ExtensionData {
     ServerName(ServerNameList),      // Decoder added, untested
@@ -711,6 +730,7 @@ impl ByteSerializable for KeyShareClientHello {
 pub struct KeyShareServerHello {
     pub server_share: KeyShareEntry,
 }
+
 impl ByteSerializable for KeyShareServerHello {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         self.server_share.as_bytes()
@@ -731,6 +751,7 @@ pub enum PskKeyExchangeMode {
     PskKe = 0,
     PskDheKe = 1,
 }
+
 /// ## `psk_key_exchange_modes` extension
 /// A client MUST provide a `PskKeyExchangeModes` extension if it
 ///  offers a `pre_shared_key` extension.
