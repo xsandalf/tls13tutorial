@@ -1,12 +1,9 @@
 //! # TLS Extensions and their encoding/decoding
 //!
 //! Includes `ByteSerializable` trait for converting structures into bytes and constructing again.
-use core::panic;
-
 use crate::handshake::ProtocolVersion;
 use crate::parser::ByteParser;
 use ::log::{debug, warn};
-use log::error;
 
 /// `ByteSerializable` trait is used to serialize and deserialize the struct into bytes
 pub trait ByteSerializable {
@@ -495,7 +492,7 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
         let mut signature_schemes = Vec::new();
 
         while i < length {
-            // NOTE: I am not sure this is a good idea
+            // NOTE: I am not sure if this is a good idea
             signature_schemes.push(*SignatureScheme::from_bytes(bytes)?);
             i += 2
         }
@@ -583,8 +580,29 @@ impl ByteSerializable for NamedGroupList {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement NamedGroupList from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement NamedGroupList from_bytes")
+        // 2 byte length determinant for `named_group_list`
+        let length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid named group list length",
+            )
+        })?;
+
+        // Stupid loop time
+        let mut i = 0;
+        let mut named_groups = Vec::new();
+
+        while i < length {
+            // NOTE: I am not sure if this is a good idea
+            named_groups.push(*NamedGroup::from_bytes(bytes)?);
+            i += 2
+        }
+
+        Ok(Box::new(NamedGroupList {
+            named_group_list: named_groups,
+        }))
     }
 }
 
