@@ -355,7 +355,7 @@ impl ByteSerializable for ServerNameList {
             )
         })?;
 
-        // Stupid loop time
+        // NOTE: Stupid loop time
         let mut i = 0;
         let mut server_names = Vec::new();
 
@@ -376,7 +376,7 @@ impl ByteSerializable for ServerNameList {
                 )
             })?;
 
-            // Should this have error check, or should that be in the get_bytes() method
+            // NOTE: Should this have error check, or should that be in the get_bytes() method
             let host_name = bytes.get_bytes(length as usize);
 
             server_names.push(ServerName {
@@ -384,7 +384,7 @@ impl ByteSerializable for ServerNameList {
                 host_name: host_name,
             });
             // 1 byte for name_type + length of host_name
-            i += (1 + length)
+            i += 1 + length
         }
 
         Ok(Box::new(ServerNameList {
@@ -439,27 +439,29 @@ impl ByteSerializable for SignatureScheme {
         // TODO: Needs to be tested. todo!("Implement SignatureScheme from_bytes")
         // SignatureScheme value is 2 bytes
         // NOTE: This feels very dumb, but I am not familiar with Rust. So much repetition, most likely pointless
-        let signature_scheme = bytes.get_u16();
+        let signature_scheme = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid signature scheme")
+        })?;
         match signature_scheme {
-            Some(0x0401) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha256)),
-            Some(0x0501) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha384)),
-            Some(0x0601) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha512)),
-            Some(0x0403) => Ok(Box::new(SignatureScheme::EcdsaSecp256r1Sha256)),
-            Some(0x0503) => Ok(Box::new(SignatureScheme::EcdsaSecp384r1Sha384)),
-            Some(0x0603) => Ok(Box::new(SignatureScheme::EcdsaSecp521r1Sha512)),
-            Some(0x0804) => Ok(Box::new(SignatureScheme::RsaPssRsaeSha256)),
-            Some(0x0805) => Ok(Box::new(SignatureScheme::RsaPssRsaeSha384)),
-            Some(0x0806) => Ok(Box::new(SignatureScheme::RsaPssRsaeSha512)),
-            Some(0x0807) => Ok(Box::new(SignatureScheme::Ed25519)), // NOTE The only supported signature scheme
-            Some(0x0808) => Ok(Box::new(SignatureScheme::Ed448)),
-            Some(0x0809) => Ok(Box::new(SignatureScheme::RsaPssPssSha256)),
-            Some(0x080a) => Ok(Box::new(SignatureScheme::RsaPssPssSha384)),
-            Some(0x080b) => Ok(Box::new(SignatureScheme::RsaPssPssSha512)),
-            Some(0x0201) => Ok(Box::new(SignatureScheme::RsaPkcs1Sha1)),
-            Some(0x0203) => Ok(Box::new(SignatureScheme::EcdsaSha1)),
+            0x0401 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha256)),
+            0x0501 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha384)),
+            0x0601 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha512)),
+            0x0403 => Ok(Box::new(SignatureScheme::EcdsaSecp256r1Sha256)),
+            0x0503 => Ok(Box::new(SignatureScheme::EcdsaSecp384r1Sha384)),
+            0x0603 => Ok(Box::new(SignatureScheme::EcdsaSecp521r1Sha512)),
+            0x0804 => Ok(Box::new(SignatureScheme::RsaPssRsaeSha256)),
+            0x0805 => Ok(Box::new(SignatureScheme::RsaPssRsaeSha384)),
+            0x0806 => Ok(Box::new(SignatureScheme::RsaPssRsaeSha512)),
+            0x0807 => Ok(Box::new(SignatureScheme::Ed25519)), // NOTE The only supported signature scheme
+            0x0808 => Ok(Box::new(SignatureScheme::Ed448)),
+            0x0809 => Ok(Box::new(SignatureScheme::RsaPssPssSha256)),
+            0x080a => Ok(Box::new(SignatureScheme::RsaPssPssSha384)),
+            0x080b => Ok(Box::new(SignatureScheme::RsaPssPssSha512)),
+            0x0201 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha1)),
+            0x0203 => Ok(Box::new(SignatureScheme::EcdsaSha1)),
             _ => {
                 error!("Unknown SignatureScheme: {:?}", signature_scheme);
-                todo!("Check standard what to do")
+                todo!("Check standard on what to do")
             }
         }
     }
@@ -480,8 +482,29 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement SupportedSignatureAlgorithms from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement SupportedSignatureAlgorithms from_bytes")
+        // 2 byte length determinant for the whole `SupportedSignatureAlgorithms`
+        let length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid supported signature algorithms length",
+            )
+        })?;
+
+        // Stupid loop time
+        let mut i = 0;
+        let mut signature_schemes = Vec::new();
+
+        while i < length {
+            // NOTE: I am not sure this is a good idea
+            signature_schemes.push(*SignatureScheme::from_bytes(bytes)?);
+            i += 2
+        }
+
+        Ok(Box::new(SupportedSignatureAlgorithms {
+            supported_signature_algorithms: signature_schemes,
+        }))
     }
 }
 
