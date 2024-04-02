@@ -149,7 +149,7 @@ pub enum ExtensionData {
     SupportedGroups(NamedGroupList), // Decoder added, untested
     SignatureAlgorithms(SupportedSignatureAlgorithms), // Decoder added, untested. SignatureScheme decoder added, untested
     SupportedVersions(SupportedVersions),              // Decoder added, untested
-    KeyShareClientHello(KeyShareClientHello), // Needs decoder, KeyShare "inside" it needs decoder
+    KeyShareClientHello(KeyShareClientHello), // Decoder added, untested. KeyShare decoder added, untested
     KeyShareServerHello(KeyShareServerHello),
     PskKeyExchangeModes(PskKeyExchangeModes), // Needs decoder
     Unserialized(Vec<u8>),                    // Placeholder for unimplemented extension data
@@ -678,8 +678,33 @@ impl ByteSerializable for KeyShareClientHello {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement KeyShareClientHello from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Needs to be tested. todo!("Implement KeyShareClientHello from_bytes")
+        // 2 byte length determinant for `client_shares`
+        let length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid key exchange length",
+            )
+        })?;
+
+        // NOTE: Stupid loop time
+        let mut i = 0;
+        let mut key_shares = Vec::new();
+
+        // NOTE: Length should be checked
+        while i < length {
+            // NOTE: Stupid but it is a start part 1
+            let len = bytes.len();
+            // NOTE: I am not sure if this is a good idea
+            key_shares.push(*KeyShareEntry::from_bytes(bytes)?);
+            // NOTE: Stupid but it is a start part 2
+            i += (len - bytes.len()) as u16
+        }
+
+        Ok(Box::new(KeyShareClientHello {
+            client_shares: key_shares,
+        }))
     }
 }
 /// `key_share` extension data structure in `ServerHello`
