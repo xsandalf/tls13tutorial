@@ -51,6 +51,7 @@ struct HandshakeKeys {
     server_hs_finished_key: Vec<u8>,
     server_seq_num: u64,
 }
+
 impl HandshakeKeys {
     #[must_use]
     fn new() -> Self {
@@ -91,6 +92,7 @@ impl HandshakeKeys {
             server_seq_num: 0,
         }
     }
+
     /// Update the keys based on handshake messages
     /// Specific for SHA256 hash function
     /// See especially Section 7. in the standard
@@ -102,15 +104,18 @@ impl HandshakeKeys {
             self.dh_client_ephemeral_secret
                 .diffie_hellman(&self.dh_server_public),
         );
+
         // Early secret - we don't implement PSK, so need to use empty arrays
         let (early_secret, _hk) = Hkdf::<Sha256>::extract(Some(&[0u8; 32]), &[0u8; 32]);
         let sha256_empty = Sha256::digest([]);
         let derived_secret = Self::derive_secret(&early_secret, b"derived", &sha256_empty, 32);
+
         // Handshake secrets with Key & IV pairs
         let (handshake_secret, _hk) = Hkdf::<Sha256>::extract(
             Some(&derived_secret),
             self.dh_shared_secret.as_ref().unwrap().as_bytes(),
         );
+
         let client_hs_traffic_secret =
             Self::derive_secret(&handshake_secret, b"c hs traffic", transcript_hash, 32);
         self.client_hs_key = Self::derive_secret(&client_hs_traffic_secret, b"key", &[], 32);
@@ -123,6 +128,7 @@ impl HandshakeKeys {
         self.server_hs_iv = Self::derive_secret(&server_hs_traffic_secret, b"iv", &[], 12);
         self.server_hs_finished_key =
             Self::derive_secret(&server_hs_traffic_secret, b"finished", &[], 32);
+
         // Print all the keys as hex strings
         debug!(
             "Shared secret: {}",
@@ -152,6 +158,7 @@ impl HandshakeKeys {
             to_hex(&self.server_hs_finished_key)
         );
     }
+
     /// Expand the secret with the label and transcript hash (hash bytes of the combination of messages)
     /// Label format is described in the RFC 8446 section 7.1
     /// FIXME will panic on invalid lengths. Maybe someone notices this with a bit of fuzzing..
@@ -213,6 +220,7 @@ fn main() {
         eprintln!("Usage: {} <address:port>", args[0]);
         std::process::exit(1);
     };
+
     // Creating logger.
     // You can change the level with RUST_LOG environment variable, e.g. RUST_LOG=debug
     env_logger::builder().format_timestamp(None).init();
@@ -221,8 +229,9 @@ fn main() {
         error!("Invalid address:port format");
         std::process::exit(1);
     };
+
     // Create initial random values and keys for the handshake
-    let handshake_keys = HandshakeKeys::new();
+    let mut handshake_keys = HandshakeKeys::new();
 
     match TcpStream::connect(address) {
         Ok(mut stream) => {
@@ -287,6 +296,7 @@ fn main() {
             // Alternative styles
             // dbg!(&client_hello);
             // println!("{client_hello:#?}");
+
             let handshake = Handshake {
                 msg_type: HandshakeType::ClientHello,
                 length: u32::try_from(
@@ -298,6 +308,7 @@ fn main() {
                 .expect("ClientHello message too long"),
                 message: HandshakeMessage::ClientHello(client_hello.clone()),
             };
+
             let client_handshake_bytes = handshake
                 .as_bytes()
                 .expect("Failed to serialize Handshake message into bytes");
@@ -309,6 +320,7 @@ fn main() {
                     .expect("Handshake message too long"),
                 fragment: client_handshake_bytes.clone(),
             };
+
             // Send the constructed request to the server
             match stream.write_all(
                 &request_record
@@ -322,15 +334,18 @@ fn main() {
                     error!("Failed to send the request: {e}");
                 }
             }
+
             // Read all the response data into a `VecDeque` buffer
             let buffer = process_tcp_stream(&mut stream).unwrap_or_else(|e| {
                 error!("Failed to read the TCP response: {e}");
                 std::process::exit(1)
             });
+
             let response_records = tls13tutorial::get_records(buffer).unwrap_or_else(|e| {
                 error!("Failed to process the records: {e}");
                 std::process::exit(1)
             });
+
             for record in response_records {
                 match record.record_type {
                     ContentType::Alert => match Alert::from_bytes(&mut record.fragment.into()) {
@@ -349,10 +364,56 @@ fn main() {
                         if let HandshakeMessage::ServerHello(server_hello) = handshake.message {
                             info!("ServerHello message: {:?}", server_hello);
                             warn!("TODO: Implement the server hello message processing, and decoding of the rest of the extensions");
-                            // TODO find the key share entry for X25519
-                            // Calculate the shared secret (Check X25519_dalek crate)
-                            // Store the shared secret in the HandshakeKeys struct, and calculate the key schedule
-                            // TODO calculate transcript hash for hello messages (check illustration site and standard)
+                            // DONE, tested. TODO find the key share entry for X25519
+                            // DONE, untested. Calculate the shared secret (Check X25519_dalek crate)
+                            // DONE, untested. Store the shared secret in the HandshakeKeys struct, and calculate the key schedule
+                            // DONE, untested. TODO calculate transcript hash for hello messages (check illustration site and standard)
+                            // TODO: Check random for HelloRetryRequest bytes
+                            // TODO: Check random last 8 bytes for TLS 1.2 or 1.1 or below negoation bytes,
+                            // MUST throw illegal parameter alert
+                            // NOTE: This again feels very stupid and is probably wrong
+                            let mut sh_bytes = server_hello.clone().as_bytes().unwrap();
+                            for extension in server_hello.extensions {
+                                match extension.extension_data {
+                                    ExtensionData::KeyShareServerHello(key_share_server_hello) => {
+                                        // TODO: Check that group is correct
+                                        // TODO: length check or error handling
+                                        let server_public_key: [u8; 32] = key_share_server_hello
+                                            .server_share
+                                            .key_exchange
+                                            .try_into()
+                                            .unwrap();
+                                        // Server public key
+                                        handshake_keys.dh_server_public =
+                                            PublicKey::from(server_public_key);
+                                        // Shared secret, unnecessary??
+                                        /*handshake_keys.dh_shared_secret = Some(
+                                            handshake_keys
+                                                .dh_client_ephemeral_secret
+                                                .diffie_hellman(&handshake_keys.dh_server_public),
+                                        );
+                                        debug!(
+                                            "Shared secret: {}",
+                                            to_hex(
+                                                handshake_keys
+                                                    .dh_shared_secret
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .as_bytes()
+                                            )
+                                        );*/
+                                        let mut ch_bytes = client_hello.as_bytes().unwrap();
+                                        ch_bytes.append(&mut sh_bytes);
+                                        let transcript_hash = Sha256::digest(ch_bytes);
+                                        handshake_keys.key_schedule(&transcript_hash)
+                                    }
+                                    ExtensionData::SupportedVersions(_supported_version) => {}
+                                    _ => {
+                                        //TODO: Add rest of the allowed extension in ServerHello
+                                        error!("Unexpected extension in ServerHello");
+                                    }
+                                }
+                            }
                         }
                     }
                     ContentType::ApplicationData => {
