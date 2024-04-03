@@ -60,6 +60,7 @@ impl Extension {
         let mut ext_bytes = ByteParser::from(ext_data);
         debug!("Extension data: {:?}", ext_bytes);
         let extension_data = match ext_type {
+            // TODO: needs to be tested
             // TODO Implement the rest of the extension types
             0 => ExtensionData::ServerName(*ServerNameList::from_bytes(&mut ext_bytes)?),
             10 => ExtensionData::SupportedGroups(*NamedGroupList::from_bytes(&mut ext_bytes)?),
@@ -73,7 +74,7 @@ impl Extension {
             )?),
             51 => ExtensionData::KeyShareServerHello(*KeyShareServerHello::from_bytes(
                 &mut ext_bytes,
-            )?), // Or ClientHello
+            )?), // Use origin to choose server or client
             _ => {
                 warn!("Unknown ExtensionType: {}", ext_type);
                 return Err(std::io::Error::new(
@@ -161,7 +162,9 @@ impl From<u16> for ExtensionType {
 /// TODO not all extension data types are implemented or added
 /// Missing: signature_algorithms_cert(?), pre-shared key(?)
 /// If no "signature_algorithms_cert" extension is present,
-/// then the "signature_algorithms" extension also applies to signatures appearing in certificates., pre_shared_key
+/// then the "signature_algorithms" extension also applies to signatures appearing in certificates.
+/// All implementations MUST send and use these extensions when offering applicable features:
+/// "pre_shared_key" is REQUIRED for PSK key agreement.
 #[derive(Debug, Clone)]
 pub enum ExtensionData {
     ServerName(ServerNameList),      // Decoder added, untested
@@ -200,6 +203,7 @@ impl ByteSerializable for ExtensionData {
 
     fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         todo!()
+        // TODO: Needs to be tested.
     }
 }
 
@@ -244,6 +248,7 @@ impl ByteSerializable for SupportedVersions {
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         // It takes at least 3 bytes to present ClientHello
         // Not the best for validation, but it's a start
+        // TODO: Split same way as KeyShareClientHello and KeyShareServerHello
         // NOTE: What if len() is 0
         if bytes.len() > 2 {
             // TODO: Needs to be tested. todo!("We don't support receiving ClientHello")

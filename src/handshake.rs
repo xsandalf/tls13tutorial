@@ -24,11 +24,13 @@ pub mod cipher_suites {
             &self.0
         }
     }
+
     impl From<[u8; 2]> for CipherSuite {
         fn from(slice: [u8; 2]) -> Self {
             CipherSuite(slice)
         }
     }
+
     impl From<Vec<u8>> for CipherSuite {
         fn from(slice: Vec<u8>) -> Self {
             let mut arr = [0u8; 2];
@@ -36,11 +38,13 @@ pub mod cipher_suites {
             CipherSuite(arr)
         }
     }
+
     pub const TLS_AES_128_GCM_SHA256: CipherSuite = CipherSuite([0x13, 0x01]);
     pub const TLS_AES_256_GCM_SHA384: CipherSuite = CipherSuite([0x13, 0x02]);
     pub const TLS_CHACHA20_POLY1305_SHA256: CipherSuite = CipherSuite([0x13, 0x03]);
     pub const TLS_AES_128_CCM_SHA256: CipherSuite = CipherSuite([0x13, 0x04]);
     pub const TLS_AES_128_CCM_8_SHA256: CipherSuite = CipherSuite([0x13, 0x05]);
+
     /// Pretty print the cipher suite
     impl std::fmt::Display for CipherSuite {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -173,10 +177,12 @@ impl ByteSerializable for Handshake {
 pub struct Finished {
     pub verify_data: Vec<u8>, // length can be presented with single byte
 }
+
 impl ByteSerializable for Finished {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         todo!("Implement Finished::as_bytes")
     }
+
     fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         todo!("Implement Finished::from_bytes")
     }
@@ -203,9 +209,11 @@ impl ClientHello {
     fn version_bytes(&self) -> Vec<u8> {
         self.legacy_version.to_be_bytes().to_vec()
     }
+
     fn random_bytes(&self) -> &[u8] {
         self.random.as_ref()
     }
+
     fn session_id_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         #[allow(clippy::cast_possible_truncation)]
@@ -213,6 +221,7 @@ impl ClientHello {
         bytes.extend_from_slice(self.legacy_session_id.as_slice());
         bytes
     }
+
     fn cipher_suites_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         let len_ciphers: usize = self.cipher_suites.iter().fold(0, |acc, _x| acc + 2);
@@ -228,6 +237,7 @@ impl ClientHello {
     fn compression_methods_bytes(&self) -> Vec<u8> {
         vec![0x01, 0x00] // TLS 1.3 does not support compression
     }
+
     fn extensions_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
         let mut ext_bytes = Vec::new();
@@ -268,6 +278,7 @@ pub struct ServerHello {
     pub legacy_compression_method: u8,
     pub extensions: Vec<Extension>, // length of the data can be 6..2^16-1 (2 bytes to present)
 }
+
 impl ByteSerializable for ServerHello {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
@@ -285,6 +296,7 @@ impl ByteSerializable for ServerHello {
         bytes.extend(ext_bytes);
         Some(bytes)
     }
+
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         #[allow(unused)]
         let checksum: VecDeque<u8>;
@@ -357,6 +369,7 @@ pub enum CertificateType {
     X509 = 0,
     RawPublicKey = 2,
 }
+
 /// A single certificate and set of extensions as defined in Section 4.2.
 #[derive(Debug, Clone)]
 pub struct CertificateEntry {
@@ -364,6 +377,7 @@ pub struct CertificateEntry {
     pub certificate_data: Vec<u8>, // length of the data can be 1..2^24-1 (3 bytes to present)
     pub extensions: Vec<Extension>,
 }
+
 /// [`Certificate` message](https://datatracker.ietf.org/doc/html/rfc8446#section-4.4.2)
 ///  This message conveys the endpoint's certificate chain to the peer.
 #[derive(Debug, Clone)]

@@ -3,12 +3,14 @@
 use crate::extensions::ByteSerializable;
 use crate::parser::ByteParser;
 use std::io;
+
 /// `AlertLevel` is a 1-byte value enum representing the level of the alert.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AlertLevel {
     Warning = 1,
     Fatal = 2,
 }
+
 /// Allow textual representation of the alert level object
 impl std::fmt::Display for AlertLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -104,6 +106,7 @@ impl ByteSerializable for Alert {
             u8::try_from(self.description as u16).ok()?,
         ])
     }
+
     /// Parse the bytes into an `Alert` struct, data must be 2 bytes long
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         if bytes.len() != 2 {
@@ -160,6 +163,7 @@ impl ByteSerializable for Alert {
         Ok(Box::new(Alert { level, description }))
     }
 }
+
 /// Allow the textual presentation of the `Alert` struct
 impl std::fmt::Display for Alert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
