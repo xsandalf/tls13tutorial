@@ -19,10 +19,10 @@ use tls13tutorial::handshake::{
 use tls13tutorial::tls_record::{ContentType, TLSRecord};
 
 // Cryptographic libraries
-// use chacha20poly1305::{
-//     aead::{Aead, KeyInit, Payload},
-//     ChaCha20Poly1305,
-// };
+use chacha20poly1305::{
+    aead::{Aead, KeyInit, Payload},
+    ChaCha20Poly1305, Nonce,
+};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
@@ -358,21 +358,23 @@ fn main() {
                     },
                     ContentType::Handshake => {
                         debug!("Raw handshake data: {:?}", record.fragment);
+                        let sh_bytes = record.fragment.clone();
                         let handshake = *Handshake::from_bytes(&mut record.fragment.into())
                             .expect("Failed to parse Handshake message");
+                        //let sh_bytes = handshake.clone().as_bytes().unwrap();
                         debug!("Handshake message: {:?}", &handshake);
                         if let HandshakeMessage::ServerHello(server_hello) = handshake.message {
                             info!("ServerHello message: {:?}", server_hello);
-                            warn!("TODO: Implement the server hello message processing, and decoding of the rest of the extensions");
+                            //warn!("TODO: Implement the server hello message processing, and decoding of the rest of the extensions");
                             // DONE, tested. TODO find the key share entry for X25519
-                            // DONE, untested. Calculate the shared secret (Check X25519_dalek crate)
-                            // DONE, untested. Store the shared secret in the HandshakeKeys struct, and calculate the key schedule
-                            // DONE, untested. TODO calculate transcript hash for hello messages (check illustration site and standard)
+                            // DONE, tested. Calculate the shared secret (Check X25519_dalek crate)
+                            // DONE, tested. Store the shared secret in the HandshakeKeys struct, and calculate the key schedule
+                            // DONE, tested. TODO calculate transcript hash for hello messages (check illustration site and standard)
                             // TODO: Check random for HelloRetryRequest bytes
                             // TODO: Check random last 8 bytes for TLS 1.2 or 1.1 or below negoation bytes,
                             // MUST throw illegal parameter alert
                             // NOTE: This again feels very stupid and is probably wrong
-                            let mut sh_bytes = server_hello.clone().as_bytes().unwrap();
+                            //let sh_bytes = server_hello.clone().as_bytes().unwrap();
                             for extension in server_hello.extensions {
                                 match extension.extension_data {
                                     ExtensionData::KeyShareServerHello(key_share_server_hello) => {
@@ -386,25 +388,17 @@ fn main() {
                                         // Server public key
                                         handshake_keys.dh_server_public =
                                             PublicKey::from(server_public_key);
-                                        // Shared secret, unnecessary??
-                                        /*handshake_keys.dh_shared_secret = Some(
-                                            handshake_keys
-                                                .dh_client_ephemeral_secret
-                                                .diffie_hellman(&handshake_keys.dh_server_public),
-                                        );
-                                        debug!(
-                                            "Shared secret: {}",
-                                            to_hex(
-                                                handshake_keys
-                                                    .dh_shared_secret
-                                                    .as_ref()
-                                                    .unwrap()
-                                                    .as_bytes()
-                                            )
-                                        );*/
-                                        let mut ch_bytes = client_hello.as_bytes().unwrap();
-                                        ch_bytes.append(&mut sh_bytes);
-                                        let transcript_hash = Sha256::digest(ch_bytes);
+                                        // NOTE: Very stupid
+                                        //let mut ch_bytes = client_hello.as_bytes().unwrap();
+                                        let mut messages = Vec::new();
+                                        //messages
+                                        //    .extend_from_slice(&client_hello.as_bytes().unwrap());
+                                        messages.extend_from_slice(&client_handshake_bytes.clone());
+                                        messages.extend_from_slice(&sh_bytes);
+                                        //ch_bytes.append(&mut sh_bytes);
+                                        debug!("Messages: {}", to_hex(&messages));
+                                        let transcript_hash = Sha256::digest(messages);
+                                        debug!("Hash: {}", to_hex(&transcript_hash));
                                         handshake_keys.key_schedule(&transcript_hash)
                                     }
                                     ExtensionData::SupportedVersions(_supported_version) => {}
@@ -423,6 +417,32 @@ fn main() {
                         info!("Application data received, size of : {:?}", record.length);
                         assert_eq!(record.fragment.len(), record.length as usize);
                         warn!("TODO: Decryption of the data and decoding of the all extensions not implemented");
+                        let mut aad = Vec::new();
+                        aad.push(record.record_type as u8);
+                        aad.extend_from_slice(&record.legacy_record_version.to_be_bytes());
+                        aad.extend_from_slice(&record.length.to_be_bytes());
+                        debug!("Aad: {}", to_hex(&aad));
+                        let payload = Payload {
+                            msg: &record.fragment,
+                            aad: &aad,
+                        };
+                        // NOTE: Stupid alert
+                        let mut iv = vec![0u8; 4];
+                        //handshake_keys.server_seq_num = 1;
+                        iv.splice(4.., handshake_keys.server_seq_num.to_be_bytes().to_vec());
+                        debug!("IV: {}", to_hex(&iv));
+                        // XOR
+                        let nonce: Vec<u8> = iv
+                            .iter()
+                            .zip(handshake_keys.server_hs_iv.iter())
+                            .map(|(&x1, &x2)| x1 ^ x2)
+                            .collect();
+                        debug!("Nonce: {}", to_hex(&nonce));
+                        let cipher =
+                            ChaCha20Poly1305::new_from_slice(&handshake_keys.server_hs_key);
+                        debug!("{:?}", cipher.is_ok());
+                        let result = cipher.unwrap().decrypt(Nonce::from_slice(&nonce), payload);
+                        debug!("Raw decrypted data: {:?}", result);
                     }
                     _ => {
                         error!("Unexpected response type: {:?}", record.record_type);
