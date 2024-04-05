@@ -131,9 +131,10 @@ impl ByteSerializable for TLSInnerPlaintext {
         Some(bytes)
     }
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Untested. todo!("Implement TLSInnerPlaintext from_bytes")
+        // DONE, tested. todo!("Implement TLSInnerPlaintext from_bytes")
         let length = bytes.len();
         debug!("TLSInnerPlaintext defined length: {}", length);
+
         // The length MUST NOT exceed 2^14 + 1 octets.
         // An endpoint that receives a record that exceeds this length MUST
         // terminate the connection with a "unexpected_message" alert.
@@ -153,7 +154,10 @@ impl ByteSerializable for TLSInnerPlaintext {
             }
             padding_size += 1;
         }
-        let content = bytes.get_bytes(padding_size);
+        debug!("TLSInnerPlaintext padding size: {}", padding_size);
+
+        // Minus 1 byte for content_type
+        let content = bytes.get_bytes(length - padding_size - 1);
         let content_type = match bytes.get_u8().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -166,10 +170,10 @@ impl ByteSerializable for TLSInnerPlaintext {
             23 => ContentType::ApplicationData,
             _ => ContentType::Invalid,
         };
+        debug!("TLSInnerPlaintext content type: {}", content_type as u8);
 
-        // NOTE: Risky
-        // Rest of the bytes in the buffer should be zero padding bytes
-        let zeros = bytes.drain();
+        // Remove zero padding from buffer
+        let zeros = bytes.get_bytes(padding_size);
         Ok(Box::new(TLSInnerPlaintext {
             content,
             content_type,
