@@ -16,7 +16,7 @@ use tls13tutorial::handshake::{
     cipher_suites, ClientHello, Handshake, HandshakeMessage, HandshakeType, Random,
     TLS_VERSION_1_3, TLS_VERSION_COMPATIBILITY,
 };
-use tls13tutorial::tls_record::{ContentType, TLSRecord};
+use tls13tutorial::tls_record::{ContentType, TLSInnerPlaintext, TLSRecord};
 
 // Cryptographic libraries
 use chacha20poly1305::{
@@ -233,6 +233,11 @@ fn main() {
     // Create initial random values and keys for the handshake
     let mut handshake_keys = HandshakeKeys::new();
 
+    // Create SHA256 hasher for Transcript-Hash
+    // Have to use this "hack" because of a rust analyzer bug
+    // ra assumes the wrong new() and throws false positive: expected 1 argument, found 0 rust-analyzer(E0107)
+    let mut sha256 = Sha256::new_with_prefix([]);
+
     match TcpStream::connect(address) {
         Ok(mut stream) => {
             info!("Successfully connected to the server '{address}'.");
@@ -390,14 +395,18 @@ fn main() {
                                             PublicKey::from(server_public_key);
                                         // NOTE: Very stupid
                                         //let mut ch_bytes = client_hello.as_bytes().unwrap();
-                                        let mut messages = Vec::new();
+                                        //let mut messages = Vec::new();
                                         //messages
                                         //    .extend_from_slice(&client_hello.as_bytes().unwrap());
-                                        messages.extend_from_slice(&client_handshake_bytes.clone());
-                                        messages.extend_from_slice(&sh_bytes);
+                                        //messages.extend_from_slice(&client_handshake_bytes.clone());
+                                        //messages.extend_from_slice(&sh_bytes);
+                                        sha256.update(client_handshake_bytes.clone());
+                                        sha256.update(&sh_bytes);
                                         //ch_bytes.append(&mut sh_bytes);
-                                        debug!("Messages: {}", to_hex(&messages));
-                                        let transcript_hash = Sha256::digest(messages);
+                                        //debug!("Messages: {}", to_hex(&messages));
+                                        //let transcript_hash = Sha256::digest(messages);
+                                        //sha256.update(messages);
+                                        let transcript_hash = sha256.clone().finalize();
                                         debug!("Hash: {}", to_hex(&transcript_hash));
                                         handshake_keys.key_schedule(&transcript_hash)
                                     }
@@ -441,8 +450,13 @@ fn main() {
                         let cipher =
                             ChaCha20Poly1305::new_from_slice(&handshake_keys.server_hs_key);
                         debug!("{:?}", cipher.is_ok());
-                        let result = cipher.unwrap().decrypt(Nonce::from_slice(&nonce), payload);
+                        let result = cipher
+                            .unwrap()
+                            .decrypt(Nonce::from_slice(&nonce), payload)
+                            .unwrap();
                         debug!("Raw decrypted data: {:?}", result);
+                        let _plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
+                            .expect("Failed to parse TLSInnerPlaintext");
                     }
                     _ => {
                         error!("Unexpected response type: {:?}", record.record_type);
