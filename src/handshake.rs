@@ -3,6 +3,7 @@
 use crate::extensions::{ByteSerializable, Extension, ExtensionOrigin};
 use crate::handshake::cipher_suites::CipherSuite;
 use crate::parser::ByteParser;
+use log::debug;
 use std::collections::VecDeque;
 
 pub type ProtocolVersion = u16;
@@ -80,7 +81,7 @@ pub enum HandshakeMessage {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
     EndOfEarlyData,
-    EncryptedExtensions,
+    EncryptedExtensions(EncryptedExtensions),
     CertificateRequest,
     Certificate(Certificate),
     CertificateVerify,
@@ -124,6 +125,7 @@ impl ByteSerializable for Handshake {
         let hs_type = match bytes.get_u8() {
             Some(1) => HandshakeType::ClientHello,
             Some(2) => HandshakeType::ServerHello,
+            Some(8) => HandshakeType::EncryptedExtensions,
             Some(11) => HandshakeType::Certificate,
             Some(15) => HandshakeType::CertificateVerify,
             Some(20) => HandshakeType::Finished,
@@ -140,6 +142,7 @@ impl ByteSerializable for Handshake {
                 "Invalid handshake message length",
             )
         })?;
+        debug!("Handshake message length: {:?}", msg_length);
         let hs_message = match hs_type {
             HandshakeType::ClientHello => {
                 let client_hello = ClientHello::from_bytes(bytes)?;
@@ -148,6 +151,10 @@ impl ByteSerializable for Handshake {
             HandshakeType::ServerHello => {
                 let server_hello = ServerHello::from_bytes(bytes)?;
                 HandshakeMessage::ServerHello(*server_hello)
+            }
+            HandshakeType::EncryptedExtensions => {
+                let encrypted_extensions = EncryptedExtensions::from_bytes(bytes)?;
+                HandshakeMessage::EncryptedExtensions(*encrypted_extensions)
             }
             HandshakeType::Certificate => {
                 let certificate = Certificate::from_bytes(bytes)?;
@@ -390,7 +397,49 @@ impl ByteSerializable for Certificate {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         todo!("Implement Certificate::as_bytes")
     }
+
     fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         todo!("Implement Certificate::from_bytes")
+    }
+}
+
+/// `EncryptedExtensions` message
+#[derive(Debug, Clone)]
+pub struct EncryptedExtensions {
+    pub extensions: Vec<Extension>, // length of the data can be 0..2^16-1 (2 bytes to present)
+}
+
+impl ByteSerializable for EncryptedExtensions {
+    fn as_bytes(&self) -> Option<Vec<u8>> {
+        // TODO: Untested
+        let mut bytes = Vec::new();
+        let mut ext_bytes = Vec::new();
+        for extension in &self.extensions {
+            ext_bytes.extend(extension.as_bytes()?);
+        }
+        bytes.extend(u16::try_from(ext_bytes.len()).ok()?.to_be_bytes());
+        bytes.extend(ext_bytes);
+        Some(bytes)
+    }
+
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        //DONE, tested.
+        let extension_length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid EncryptedExtensions extension length",
+            )
+        })?;
+        debug!("Encrypted extension length: {:?}", extension_length);
+        let mut extensions = Vec::new();
+        let extension_bytes = bytes.get_bytes(extension_length as usize);
+        let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
+
+        while !ext_parser.deque.is_empty() {
+            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
+            extensions.push(*extension);
+        }
+
+        Ok(Box::new(EncryptedExtensions { extensions }))
     }
 }

@@ -369,7 +369,7 @@ impl ByteSerializable for ServerNameList {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement ServerNameList from_bytes")
+        // DONE, tested. todo!("Implement ServerNameList from_bytes")
         // A server that receives a client hello containing the "server_name" extension
         // MAY use the information contained in the extension to guide its selection of
         // an appropriate certificate to return to the client, and/or other aspects of security policy.
