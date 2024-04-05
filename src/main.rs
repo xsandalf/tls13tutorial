@@ -16,6 +16,7 @@ use tls13tutorial::handshake::{
     cipher_suites, ClientHello, Handshake, HandshakeMessage, HandshakeType, Random,
     TLS_VERSION_1_3, TLS_VERSION_COMPATIBILITY,
 };
+use tls13tutorial::parser::ByteParser;
 use tls13tutorial::tls_record::{ContentType, TLSInnerPlaintext, TLSRecord};
 
 // Cryptographic libraries
@@ -455,8 +456,22 @@ fn main() {
                             .decrypt(Nonce::from_slice(&nonce), payload)
                             .unwrap();
                         debug!("Raw decrypted data: {:?}", result);
-                        let _plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
+                        let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
                             .expect("Failed to parse TLSInnerPlaintext");
+                        debug!("TLSInnerPlaintext content data: {:?}", plaintext.content);
+                        debug!(
+                            "TLSInnerPlaintext content length: {:?}",
+                            plaintext.content.len()
+                        );
+                        let mut content_bytes = ByteParser::from(plaintext.content);
+                        let handshake = *Handshake::from_bytes(&mut content_bytes)
+                            .expect("Failed to parse Handshake message");
+                        debug!("Handshake message: {:?}", &handshake);
+                        if !content_bytes.is_empty() {
+                            let handshake2 = *Handshake::from_bytes(&mut content_bytes)
+                                .expect("Failed to parse Handshake message");
+                            debug!("Handshake message: {:?}", &handshake2);
+                        }
                     }
                     _ => {
                         error!("Unexpected response type: {:?}", record.record_type);
