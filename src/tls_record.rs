@@ -7,6 +7,7 @@ use log::debug;
 use std::io;
 
 const RECORD_FRAGMENT_MAX_SIZE: u16 = 2u16.pow(14);
+const INNERPLAINTEXT_MAX_SIZE: u16 = 2u16.pow(14) + 8;
 
 /// TLS Record Content Types
 #[derive(Debug, Copy, Clone)]
@@ -122,9 +123,57 @@ pub struct TLSInnerPlaintext {
 }
 impl ByteSerializable for TLSInnerPlaintext {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        todo!("Implement TLSInnerPlaintext as_bytes")
+        // TODO: Untested. todo!("Implement TLSInnerPlaintext as_bytes");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&self.content);
+        bytes.push(self.content_type as u8);
+        bytes.extend_from_slice(&self.zeros);
+        Some(bytes)
     }
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement TLSInnerPlaintext from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Untested. todo!("Implement TLSInnerPlaintext from_bytes")
+        let length = bytes.len();
+        debug!("TLSInnerPlaintext defined length: {}", length);
+        // The length MUST NOT exceed 2^14 + 1 octets.
+        // An endpoint that receives a record that exceeds this length MUST
+        // terminate the connection with a "unexpected_message" alert.
+        if length > INNERPLAINTEXT_MAX_SIZE as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid TLSInnerPlaintext: record overflow",
+            ));
+        }
+
+        // NOTE: Feels stupid again
+        // Zeroes are padded to the end so we have to loop backwards to find how many there are
+        let mut padding_size = 0;
+        for byte in bytes.deque.iter().rev() {
+            if *byte != 0 {
+                break;
+            }
+            padding_size += 1;
+        }
+        let content = bytes.get_bytes(padding_size);
+        let content_type = match bytes.get_u8().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Insufficient bytes for TLSInnerPlaintext record type",
+            )
+        })? {
+            20 => ContentType::ChangeCipherSpec,
+            21 => ContentType::Alert,
+            22 => ContentType::Handshake,
+            23 => ContentType::ApplicationData,
+            _ => ContentType::Invalid,
+        };
+
+        // NOTE: Risky
+        // Rest of the bytes in the buffer should be zero padding bytes
+        let zeros = bytes.drain();
+        Ok(Box::new(TLSInnerPlaintext {
+            content,
+            content_type,
+            zeros,
+        }))
     }
 }
