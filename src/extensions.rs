@@ -202,7 +202,7 @@ impl ByteSerializable for ExtensionData {
     }
 
     fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!()
+        todo!("LOLOLOLOL")
         // TODO: Needs to be tested.
     }
 }
@@ -370,6 +370,18 @@ impl ByteSerializable for ServerNameList {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         // TODO: Needs to be tested. todo!("Implement ServerNameList from_bytes")
+        // A server that receives a client hello containing the "server_name" extension
+        // MAY use the information contained in the extension to guide its selection of
+        // an appropriate certificate to return to the client, and/or other aspects of security policy.
+        // In this event, the server SHALL include an extension of type "server_name" in the (extended) server hello.
+        // The "extension_data" field of this extension SHALL be empty.
+        // If bytes is empty, assume above and return Ok
+        if bytes.is_empty() {
+            return Ok(Box::new(ServerNameList {
+                server_name_list: Vec::new(),
+            }));
+        }
+
         // 2 byte length determinant for the whole `ServerNameList`
         let list_length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
