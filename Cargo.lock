@@ -563,6 +563,7 @@ dependencies = [
  "ecdsa",
  "env_logger",
  "hkdf",
+ "hmac",
  "log",
  "pretty_assertions",
  "rand",
