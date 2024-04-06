@@ -187,16 +187,25 @@ impl ByteSerializable for Handshake {
 /// `Finished` message is the final message in the Authentication Block.
 #[derive(Debug, Clone)]
 pub struct Finished {
+    // NOTE: Length is not actually included in the bytes. Length is based on the HMAC used for the handshake
+    // We currently support only 32 byte HMAC
     pub verify_data: Vec<u8>, // length can be presented with single byte
 }
 
 impl ByteSerializable for Finished {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        todo!("Implement Finished::as_bytes")
+        // DONE, untested. todo!("Implement Finished::as_bytes")
+        let mut bytes = Vec::new();
+        bytes.extend(self.verify_data.iter());
+        Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement Finished::from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // DONE, tested. todo!("Implement Finished::from_bytes")
+        // TODO: Check HMAC in use and choose length based on it
+        let length = 32;
+        let verify_data = bytes.get_bytes(length as usize);
+        Ok(Box::new(Finished { verify_data }))
     }
 }
 
@@ -582,7 +591,7 @@ impl ByteSerializable for CertificateVerify {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Untested
+        // TODO: Tested
         let signature_scheme = *SignatureScheme::from_bytes(bytes)
             .expect("Failed to parse CertificateVerify algorithm");
 
