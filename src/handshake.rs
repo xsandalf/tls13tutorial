@@ -1,7 +1,7 @@
 //! This module contains the structures and implementations for the handshake messages.
 #![allow(clippy::module_name_repetitions)]
 use crate::display::to_hex;
-use crate::extensions::{ByteSerializable, Extension, ExtensionOrigin};
+use crate::extensions::{ByteSerializable, Extension, ExtensionOrigin, SignatureScheme};
 use crate::handshake::cipher_suites::CipherSuite;
 use crate::parser::ByteParser;
 use log::debug;
@@ -85,7 +85,7 @@ pub enum HandshakeMessage {
     EncryptedExtensions(EncryptedExtensions),
     CertificateRequest,
     Certificate(Certificate),
-    CertificateVerify,
+    CertificateVerify(CertificateVerify),
     Finished(Finished),
     NewSessionTicket,
     KeyUpdate,
@@ -121,7 +121,7 @@ impl ByteSerializable for Handshake {
     }
 
     /// Parse the bytes into a `Handshake` struct.
-    /// We only support `ServerHello`, `Certificate`, `CertificateVerify` and `Finished` messages.
+    /// We only support `ServerHello`, `EncryptedExtensions`, `Certificate`, `CertificateVerify` and `Finished` messages.
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         let hs_type = match bytes.get_u8() {
             Some(1) => HandshakeType::ClientHello,
@@ -160,6 +160,10 @@ impl ByteSerializable for Handshake {
             HandshakeType::Certificate => {
                 let certificate = Certificate::from_bytes(bytes)?;
                 HandshakeMessage::Certificate(*certificate)
+            }
+            HandshakeType::CertificateVerify => {
+                let certificate_verify = CertificateVerify::from_bytes(bytes)?;
+                HandshakeMessage::CertificateVerify(*certificate_verify)
             }
             HandshakeType::Finished => {
                 let finished = Finished::from_bytes(bytes)?;
@@ -556,5 +560,45 @@ impl ByteSerializable for EncryptedExtensions {
         }
 
         Ok(Box::new(EncryptedExtensions { extensions }))
+    }
+}
+
+/// `CertificateVerify` message
+#[derive(Debug, Clone)]
+pub struct CertificateVerify {
+    pub algorithm: SignatureScheme,
+    pub signature: Vec<u8>, // length of the data can be 0..2^16-1 (2 bytes to present)
+}
+
+impl ByteSerializable for CertificateVerify {
+    fn as_bytes(&self) -> Option<Vec<u8>> {
+        // TODO: Untested
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&self.algorithm.as_bytes()?);
+        // 2 byte length determinant for the signature
+        bytes.extend(u16::try_from(self.signature.len()).ok()?.to_be_bytes());
+        bytes.extend(self.signature.iter());
+        Some(bytes)
+    }
+
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Untested
+        let signature_scheme = *SignatureScheme::from_bytes(bytes)
+            .expect("Failed to parse CertificateVerify algorithm");
+
+        // 2 byte length determinant for the signature
+        let length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid CertificateVerify signature length",
+            )
+        })?;
+
+        let signature = bytes.get_bytes(length as usize);
+
+        Ok(Box::new(CertificateVerify {
+            algorithm: signature_scheme,
+            signature,
+        }))
     }
 }
