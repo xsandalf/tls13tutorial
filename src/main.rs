@@ -281,7 +281,10 @@ fn main() {
                         extension_type: ExtensionType::SignatureAlgorithms,
                         extension_data: ExtensionData::SignatureAlgorithms(
                             SupportedSignatureAlgorithms {
-                                supported_signature_algorithms: vec![SignatureScheme::Ed25519],
+                                //supported_signature_algorithms: vec![SignatureScheme::Ed25519], // Ed25519 is not supported
+                                supported_signature_algorithms: vec![
+                                    SignatureScheme::EcdsaSecp256r1Sha256,
+                                ],
                             },
                         ),
                     },
@@ -456,6 +459,7 @@ fn main() {
                             .decrypt(Nonce::from_slice(&nonce), payload)
                             .unwrap();
                         debug!("Raw decrypted data: {:?}", result);
+                        handshake_keys.server_seq_num += 1;
                         let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
                             .expect("Failed to parse TLSInnerPlaintext");
                         debug!("TLSInnerPlaintext content data: {:?}", plaintext.content);
@@ -463,14 +467,39 @@ fn main() {
                             "TLSInnerPlaintext content length: {:?}",
                             plaintext.content.len()
                         );
-                        let mut content_bytes = ByteParser::from(plaintext.content);
-                        let handshake = *Handshake::from_bytes(&mut content_bytes)
-                            .expect("Failed to parse Handshake message");
-                        debug!("Handshake message: {:?}", &handshake);
-                        if !content_bytes.is_empty() {
-                            let handshake2 = *Handshake::from_bytes(&mut content_bytes)
-                                .expect("Failed to parse Handshake message");
-                            debug!("Handshake message: {:?}", &handshake2);
+                        match plaintext.content_type {
+                            ContentType::Handshake => {
+                                let mut content_bytes = ByteParser::from(plaintext.content);
+                                let handshake = *Handshake::from_bytes(&mut content_bytes)
+                                    .expect("Failed to parse Handshake message");
+                                debug!("Handshake message: {:?}", &handshake);
+                                sha256.update(handshake.clone().as_bytes().expect("lol"));
+                                if !content_bytes.is_empty() {
+                                    let handshake2 = *Handshake::from_bytes(&mut content_bytes)
+                                        .expect("Failed to parse Handshake message");
+                                    debug!("Handshake message: {:?}", &handshake2);
+                                    sha256.update(handshake2.clone().as_bytes().expect("lol"));
+                                }
+                                //let transcript_hash = sha256.clone().finalize();
+                                //debug!("Hash: {}", to_hex(&transcript_hash));
+                                //handshake_keys.key_schedule(&transcript_hash)
+                            }
+                            ContentType::Alert => {
+                                // NOTE: Alert caused by invalid signature_algorithm might be encrypted with only
+                                // ClientHello and ServerHello transcript-hash keys
+                                let mut content_bytes = ByteParser::from(plaintext.content);
+                                let alert = *Alert::from_bytes(&mut content_bytes)
+                                    .expect("Failed to parse Alert message");
+                                debug!("Alert message: {:?}", &alert);
+                                //sha256.update(handshake.clone().as_bytes().expect("lol"));
+                                //let transcript_hash = sha256.clone().finalize();
+                                //debug!("Hash: {}", to_hex(&transcript_hash));
+                                //handshake_keys.key_schedule(&transcript_hash)
+                            }
+                            _ => {
+                                error!("Unexpected response type: {:?}", record.record_type);
+                                // debug!("Remaining bytes: {:?}", parser.deque);
+                            }
                         }
                     }
                     _ => {
