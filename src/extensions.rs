@@ -412,6 +412,7 @@ impl ByteSerializable for ServerNameList {
             })?;
 
             // NOTE: Should this have error check, or should that be in the get_bytes() method
+            // TODO: Don't autoassume name_type == 0, test it
             server_names.push(ServerName {
                 name_type: NameType::HostName,
                 host_name: bytes.get_bytes(length as usize),
@@ -437,15 +438,15 @@ pub enum SignatureScheme {
     RsaPkcs1Sha384 = 0x0501,
     RsaPkcs1Sha512 = 0x0601,
     /* ECDSA algorithms */
-    EcdsaSecp256r1Sha256 = 0x0403,
+    EcdsaSecp256r1Sha256 = 0x0403, // NOTE: Added support
     EcdsaSecp384r1Sha384 = 0x0503,
     EcdsaSecp521r1Sha512 = 0x0603,
     /* RSASSA-PSS algorithms with public key OID rsaEncryption */
-    RsaPssRsaeSha256 = 0x0804,
-    RsaPssRsaeSha384 = 0x0805,
-    RsaPssRsaeSha512 = 0x0806,
+    RsaPssRsaeSha256 = 0x0804, // YES
+    RsaPssRsaeSha384 = 0x0805, // YES
+    RsaPssRsaeSha512 = 0x0806, // YES
     /* EdDSA algorithms */
-    Ed25519 = 0x0807, // NOTE The only supported signature scheme
+    Ed25519 = 0x0807, // NOTE The only supported signature scheme. NOTE: Websites don't support
     Ed448 = 0x0808,
     /* RSASSA-PSS algorithms with public key OID RSASSA-PSS */
     RsaPssPssSha256 = 0x0809,
