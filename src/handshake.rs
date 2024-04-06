@@ -1,5 +1,6 @@
 //! This module contains the structures and implementations for the handshake messages.
 #![allow(clippy::module_name_repetitions)]
+use crate::display::to_hex;
 use crate::extensions::{ByteSerializable, Extension, ExtensionOrigin};
 use crate::handshake::cipher_suites::CipherSuite;
 use crate::parser::ByteParser;
@@ -378,11 +379,12 @@ pub enum CertificateType {
 }
 
 /// A single certificate and set of extensions as defined in Section 4.2.
+/// TODO: Implement ByteSerializable
 #[derive(Debug, Clone)]
 pub struct CertificateEntry {
-    pub certificate_type: CertificateType,
+    pub certificate_type: CertificateType, // NOTE: This is not included in the messages. Do not encode/decode
     pub certificate_data: Vec<u8>, // length of the data can be 1..2^24-1 (3 bytes to present)
-    pub extensions: Vec<Extension>,
+    pub extensions: Vec<Extension>, // length of the data can be 0..2^16-1 (2 bytes to present)
 }
 
 /// [`Certificate` message](https://datatracker.ietf.org/doc/html/rfc8446#section-4.4.2)
@@ -395,11 +397,123 @@ pub struct Certificate {
 
 impl ByteSerializable for Certificate {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        todo!("Implement Certificate::as_bytes")
+        // TODO: Untested. todo!("Implement Certificate::as_bytes")
+        // TODO: Refactor, this is a mess
+        let mut bytes = Vec::new();
+        // 1 byte length determinant for the certificate_request_context
+        bytes.push(u8::try_from(self.certificate_request_context.len()).ok()?);
+        bytes.extend(self.certificate_request_context.iter());
+        let mut ce_bytes = Vec::new();
+        for cert_entry in &self.certificate_list {
+            // NOTE: This is not included
+            // ce_bytes.push(cert_entry.certificate_type as u8);
+            // 3 byte length determinant for the certificate_data
+            ce_bytes.extend_from_slice(
+                u32::try_from(cert_entry.certificate_data.len())
+                    .ok()?
+                    .to_be_bytes()[1..]
+                    .as_ref(),
+            );
+            ce_bytes.extend_from_slice(&cert_entry.certificate_data);
+
+            // This could be replaced with EncryptedExtensions::as_bytes(), since it only encodes the Vec<Extension>
+            let mut ext_bytes = Vec::new();
+            for extension in &cert_entry.extensions {
+                ext_bytes.extend(extension.as_bytes()?);
+            }
+            ce_bytes.extend(u16::try_from(ext_bytes.len()).ok()?.to_be_bytes());
+            ce_bytes.extend(ext_bytes);
+        }
+        // 3 byte length determinant for the certificate_list
+        bytes.extend_from_slice(u32::try_from(ce_bytes.len()).ok()?.to_be_bytes()[1..].as_ref());
+        bytes.extend(ce_bytes);
+
+        Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement Certificate::from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Untested. todo!("Implement Certificate::from_bytes")
+        // TODO: Refactor, this is a mess
+        debug!("Raw certificate data: {:?}", bytes);
+        // 1 byte length determinant for the certificate_request_context
+        let crc_length = bytes.get_u8().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid certificate request context length",
+            )
+        })?;
+        debug!("Certificate request context length: {:?}", crc_length);
+        let crc = bytes.get_bytes(crc_length as usize);
+
+        let list_length = bytes.get_u24().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid certificate list length",
+            )
+        })?;
+        debug!("Certificate list length: {:?}", list_length);
+        //let cert_list = bytes.get_bytes(list_length as usize);
+
+        // NOTE: Stupid loop time
+        let mut i = 0;
+        let mut cert_entries = Vec::new();
+
+        while i < list_length {
+            // NOTE: This is not included
+            /*let cert_type = match bytes.get_u8().ok_or_else(ByteParser::insufficient_data)? {
+                0 => Ok(Box::new(CertificateType::X509)),
+                2 => Ok(Box::new(CertificateType::RawPublicKey)),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid CertificationType",
+                )),
+            };
+            debug!("Certificate type: {:?}", cert_type);*/
+            // 3 byte length determinant for the certificate_data
+            let cert_data_length = bytes.get_u24().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid CertificateEntry certification data length",
+                )
+            })?;
+            debug!("Certificate data length: {:?}", cert_data_length);
+            let cert_data = bytes.get_bytes(cert_data_length as usize);
+            debug!("Cert data: {:?}", to_hex(&cert_data));
+            // This could be replaced with EncryptedExtensions::from_bytes(), since it only decodes the Vec<Extension>
+            // 2 byte length determinant for the extensions
+            let extension_length = bytes.get_u16().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid CertificateEntry extension length",
+                )
+            })?;
+            debug!("Certificate extension length: {:?}", extension_length);
+            let mut extensions = Vec::new();
+            let extension_bytes = bytes.get_bytes(extension_length as usize);
+            let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
+
+            while !ext_parser.deque.is_empty() {
+                let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
+                extensions.push(*extension);
+            }
+
+            cert_entries.push(CertificateEntry {
+                // NOTE: No idea how this is determined, probably SupportedGroup or SignatureAlgorithm
+                // Leaning towards SignatureAlgorithm
+                certificate_type: CertificateType::X509,
+                certificate_data: cert_data,
+                extensions,
+            });
+
+            // NOTE: Dumb
+            // 1 for certificate_type, 3 for certificate_data length, 2 for extensions length
+            i += 1 + 3 + cert_data_length + 2 + (extension_length as u32);
+        }
+
+        Ok(Box::new(Certificate {
+            certificate_request_context: crc,
+            certificate_list: cert_entries,
+        }))
     }
 }
 
@@ -424,6 +538,7 @@ impl ByteSerializable for EncryptedExtensions {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         //DONE, tested.
+        // 2 byte length determinant for the extensions
         let extension_length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
