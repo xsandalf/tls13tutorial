@@ -367,10 +367,9 @@ fn main() {
                     },
                     ContentType::Handshake => {
                         debug!("Raw handshake data: {:?}", record.fragment);
-                        let sh_bytes = record.fragment.clone();
+                        let hs_bytes = record.fragment.clone();
                         let handshake = *Handshake::from_bytes(&mut record.fragment.into())
                             .expect("Failed to parse Handshake message");
-                        //let sh_bytes = handshake.clone().as_bytes().unwrap();
                         debug!("Handshake message: {:?}", &handshake);
                         if let HandshakeMessage::ServerHello(server_hello) = handshake.message {
                             info!("ServerHello message: {:?}", server_hello);
@@ -383,7 +382,6 @@ fn main() {
                             // TODO: Check random last 8 bytes for TLS 1.2 or 1.1 or below negoation bytes,
                             // MUST throw illegal parameter alert
                             // NOTE: This again feels very stupid and is probably wrong
-                            //let sh_bytes = server_hello.clone().as_bytes().unwrap();
                             for extension in server_hello.extensions {
                                 match extension.extension_data {
                                     ExtensionData::KeyShareServerHello(key_share_server_hello) => {
@@ -394,24 +392,20 @@ fn main() {
                                             .key_exchange
                                             .try_into()
                                             .unwrap();
+
                                         // Server public key
                                         handshake_keys.dh_server_public =
                                             PublicKey::from(server_public_key);
-                                        // NOTE: Very stupid
-                                        //let mut ch_bytes = client_hello.as_bytes().unwrap();
-                                        //let mut messages = Vec::new();
-                                        //messages
-                                        //    .extend_from_slice(&client_hello.as_bytes().unwrap());
-                                        //messages.extend_from_slice(&client_handshake_bytes.clone());
-                                        //messages.extend_from_slice(&sh_bytes);
+
+                                        // Add handshake messages to hasher
                                         sha256.update(client_handshake_bytes.clone());
-                                        sha256.update(&sh_bytes);
-                                        //ch_bytes.append(&mut sh_bytes);
-                                        //debug!("Messages: {}", to_hex(&messages));
-                                        //let transcript_hash = Sha256::digest(messages);
-                                        //sha256.update(messages);
+                                        sha256.update(&hs_bytes);
+
+                                        // Get updated hash
                                         let transcript_hash = sha256.clone().finalize();
                                         debug!("Hash: {}", to_hex(&transcript_hash));
+
+                                        // Update keys
                                         handshake_keys.key_schedule(&transcript_hash)
                                     }
                                     ExtensionData::SupportedVersions(_supported_version) => {}
@@ -429,7 +423,9 @@ fn main() {
                         // Read TLSInnerPlaintext and proceed with the handshake
                         info!("Application data received, size of : {:?}", record.length);
                         assert_eq!(record.fragment.len(), record.length as usize);
-                        warn!("TODO: Decryption of the data and decoding of the all extensions not implemented");
+                        // Done, tested. warn!("TODO: Decryption of the data and decoding of the all extensions not implemented");
+
+                        // Create additional associated data for decryption
                         let mut aad = Vec::new();
                         aad.push(record.record_type as u8);
                         aad.extend_from_slice(&record.legacy_record_version.to_be_bytes());
@@ -439,27 +435,35 @@ fn main() {
                             msg: &record.fragment,
                             aad: &aad,
                         };
+
                         // NOTE: Stupid alert
                         let mut iv = vec![0u8; 4];
-                        //handshake_keys.server_seq_num = 1;
                         iv.splice(4.., handshake_keys.server_seq_num.to_be_bytes().to_vec());
                         debug!("IV: {}", to_hex(&iv));
-                        // XOR
+
+                        // XOR iv and server_hs_iv to create decrytpion nonce
                         let nonce: Vec<u8> = iv
                             .iter()
                             .zip(handshake_keys.server_hs_iv.iter())
                             .map(|(&x1, &x2)| x1 ^ x2)
                             .collect();
                         debug!("Nonce: {}", to_hex(&nonce));
+
+                        // Decryption cipher
                         let cipher =
                             ChaCha20Poly1305::new_from_slice(&handshake_keys.server_hs_key);
                         debug!("{:?}", cipher.is_ok());
+
+                        // Decrypt record
                         let result = cipher
                             .unwrap()
                             .decrypt(Nonce::from_slice(&nonce), payload)
                             .unwrap();
                         debug!("Raw decrypted data: {:?}", result);
+
+                        // Update sequence counter
                         handshake_keys.server_seq_num += 1;
+
                         let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
                             .expect("Failed to parse TLSInnerPlaintext");
                         debug!("TLSInnerPlaintext content data: {:?}", plaintext.content);
@@ -467,22 +471,35 @@ fn main() {
                             "TLSInnerPlaintext content length: {:?}",
                             plaintext.content.len()
                         );
+
+                        // TLSInnerPlaintext can be encoded Handshake or Alert message
                         match plaintext.content_type {
                             ContentType::Handshake => {
+                                // Note TLSInnerPlaintext can contain multiple messages
+                                // plaintext.content should not have any extra bytes
                                 let mut content_bytes = ByteParser::from(plaintext.content);
-                                let handshake = *Handshake::from_bytes(&mut content_bytes)
-                                    .expect("Failed to parse Handshake message");
-                                debug!("Handshake message: {:?}", &handshake);
-                                sha256.update(handshake.clone().as_bytes().expect("lol"));
-                                if !content_bytes.is_empty() {
-                                    let handshake2 = *Handshake::from_bytes(&mut content_bytes)
+                                while !content_bytes.is_empty() {
+                                    let handshake = *Handshake::from_bytes(&mut content_bytes)
                                         .expect("Failed to parse Handshake message");
-                                    debug!("Handshake message: {:?}", &handshake2);
-                                    sha256.update(handshake2.clone().as_bytes().expect("lol"));
+                                    debug!("Handshake message: {:?}", &handshake);
+
+                                    // NOTE: Might cause problems down the line, maybe update after all messages in one record
+                                    // have been handled.
+                                    // Add handshake messages to hasher
+                                    sha256.update(
+                                        handshake
+                                            .clone()
+                                            .as_bytes()
+                                            .expect("Failed to parse Handshake message"),
+                                    );
                                 }
-                                //let transcript_hash = sha256.clone().finalize();
-                                //debug!("Hash: {}", to_hex(&transcript_hash));
-                                //handshake_keys.key_schedule(&transcript_hash)
+
+                                // Get updated hash
+                                let transcript_hash = sha256.clone().finalize();
+                                debug!("Hash: {}", to_hex(&transcript_hash));
+
+                                // Update keys
+                                handshake_keys.key_schedule(&transcript_hash)
                             }
                             ContentType::Alert => {
                                 // NOTE: Alert caused by invalid signature_algorithm might be encrypted with only
@@ -491,10 +508,6 @@ fn main() {
                                 let alert = *Alert::from_bytes(&mut content_bytes)
                                     .expect("Failed to parse Alert message");
                                 debug!("Alert message: {:?}", &alert);
-                                //sha256.update(handshake.clone().as_bytes().expect("lol"));
-                                //let transcript_hash = sha256.clone().finalize();
-                                //debug!("Hash: {}", to_hex(&transcript_hash));
-                                //handshake_keys.key_schedule(&transcript_hash)
                             }
                             _ => {
                                 error!("Unexpected response type: {:?}", record.record_type);
