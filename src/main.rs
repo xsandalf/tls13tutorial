@@ -6,6 +6,8 @@ use rand::rngs::OsRng;
 use std::collections::VecDeque;
 use std::io::{self, Read as SocketRead, Write as SocketWrite};
 use std::net::TcpStream;
+use std::str;
+use std::time::SystemTime;
 use std::vec;
 use tls13tutorial::alert::Alert;
 use tls13tutorial::display::to_hex;
@@ -30,6 +32,9 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
+
+use rasn::types::UtcTime;
+use rasn_pkix::Time;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -498,6 +503,81 @@ fn main() {
 
                                     // Check that Finished verify_data matches
                                     match handshake.clone().message {
+                                        HandshakeMessage::Certificate(certificate) => {
+                                            // TODO: Terminate if empty certificate with "decode_error"
+                                            // NOTE: We only want the first certificate for now
+                                            let cert_copy = certificate.clone();
+                                            let cert_entry =
+                                                cert_copy.certificate_list.first().unwrap();
+                                            let enc_cert = &cert_entry.certificate_data;
+                                            let cert = rasn::der::decode::<rasn_pkix::Certificate>(
+                                                enc_cert,
+                                            )
+                                            .expect("Failed to parse Certificate");
+
+                                            let validity = cert.tbs_certificate.validity;
+                                            // NOTE: Didn't bother to ask permission to use chrono
+                                            let current_time =
+                                                Time::Utc(UtcTime::from_timestamp_nanos(
+                                                    SystemTime::now()
+                                                        .duration_since(SystemTime::UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_nanos()
+                                                        as i64,
+                                                ));
+                                            let range = validity.not_before..validity.not_after;
+
+                                            // Check validity
+                                            if !range.contains(&current_time) {
+                                                // TODO: Terminate with alert "certificate_expired"
+                                                debug!("Sanity check: Certificate expired");
+                                                debug!("{:?}", range);
+                                                debug!("{:?}", current_time);
+                                            }
+
+                                            // Need to get CN from subject
+                                            let subject = cert.tbs_certificate.subject;
+                                            let mut correct_cn = false;
+                                            // NOTE: No easy way to access, that I know of, so we have to be "hacky"
+                                            // Subject consist of RelativeDistinguishName Type and Value pairs
+                                            // Loop through RDNs and access type-value pairs with pop_first()
+                                            // We know that values are text so turn the value into a string
+                                            // TODO: Figure out ObjectIdentifier to access value directly
+                                            match subject {
+                                                rasn_pkix::Name::RdnSequence(rdn_sequence) => {
+                                                    'outer: for mut rdn in rdn_sequence {
+                                                        while !rdn.is_empty() {
+                                                            let atav = rdn.pop_first().unwrap();
+                                                            let value_bytes =
+                                                                atav.value.into_bytes();
+                                                            // Ignore first 2 bytes, they don't contain anything valuable
+                                                            let value_str = str::from_utf8(
+                                                                &&value_bytes[2..],
+                                                            )
+                                                            .expect(
+                                                                "Failed to parse value into str",
+                                                            );
+                                                            if value_str == hostname {
+                                                                correct_cn = true;
+                                                                break 'outer;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // If hostname was not found from subject, we cannot verify that Certificate belongs to host
+                                            if !correct_cn {
+                                                // TODO: Terminate with alert "certificate_unknown"
+                                                debug!("Sanity check: Cannot verify Certificate belongs to the host");
+                                            }
+
+                                            // TODO: Check Certificate chain
+                                            // NOTE: Too difficult to implement currently
+
+                                            // TODO: Check if Certificate is revoked
+                                            // NOTE: Too difficult to implemenet currently
+                                        }
                                         HandshakeMessage::Finished(finished) => {
                                             let mut hmac = <HmacSha256 as Mac>::new_from_slice(
                                                 &handshake_keys.server_hs_finished_key,
@@ -524,8 +604,7 @@ fn main() {
                                             // TODO: Add something here? :D
                                         }
                                     }
-                                    // NOTE: Might cause problems down the line, maybe update after all messages in one record
-                                    // have been handled.
+
                                     // Add handshake messages to hasher
                                     sha256.update(
                                         handshake
@@ -535,13 +614,6 @@ fn main() {
                                     debug!("Handshake message bytes: {:?}", &handshake.message);
                                     debug!("Added {:?} message to hasher", &handshake.msg_type);
                                 }
-
-                                // Get updated hash
-                                //let transcript_hash = sha256.clone().finalize();
-                                //debug!("Hash: {}", to_hex(&transcript_hash));
-
-                                // Update keys
-                                //handshake_keys.key_schedule(&transcript_hash)
                             }
                             ContentType::Alert => {
                                 // NOTE: Alert caused by invalid signature_algorithm might be encrypted with only
