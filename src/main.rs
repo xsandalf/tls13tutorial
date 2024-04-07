@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use log::{debug, error, info, warn};
+use pretty_assertions::assert_eq;
 #[cfg(not(debug_assertions))]
 use rand::rngs::OsRng;
 use std::collections::VecDeque;
@@ -25,8 +26,11 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
+
+type HmacSha256 = Hmac<Sha256>;
 
 const DEBUGGING_EPHEMERAL_SECRET: [u8; 32] = [
     0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x10, 0x11,
@@ -477,29 +481,64 @@ fn main() {
                             ContentType::Handshake => {
                                 // Note TLSInnerPlaintext can contain multiple messages
                                 // plaintext.content should not have any extra bytes
+                                //debug!("Hash: {}", to_hex(&sha256.clone().finalize()));
                                 let mut content_bytes = ByteParser::from(plaintext.content);
                                 while !content_bytes.is_empty() {
                                     let handshake = *Handshake::from_bytes(&mut content_bytes)
                                         .expect("Failed to parse Handshake message");
                                     debug!("Handshake message: {:?}", &handshake);
 
-                                    // NOTE: Might cause problems down the line, maybe update after all messages in one record
-                                    // have been handled.
-                                    // Add handshake messages to hasher
-                                    sha256.update(
-                                        handshake
-                                            .clone()
-                                            .as_bytes()
-                                            .expect("Failed to parse Handshake message"),
-                                    );
+                                    // Check that Finished verify_data matches
+                                    match handshake.clone().message {
+                                        HandshakeMessage::Finished(finished) => {
+                                            let mut hmac = <HmacSha256 as Mac>::new_from_slice(
+                                                &handshake_keys.server_hs_finished_key,
+                                            )
+                                            .expect("Failed to initiate HMAC with key");
+                                            let transcript_hash = sha256.clone().finalize();
+                                            //handshake_keys.key_schedule(&transcript_hash);
+                                            hmac.update(&transcript_hash);
+                                            debug!(
+                                                "HMAC: {:?}",
+                                                hmac.clone()
+                                                    .verify_slice(&finished.verify_data)
+                                                    .is_ok()
+                                            );
+                                            let result = hmac.finalize().into_bytes();
+                                            debug!(
+                                                "1 message: {:?}",
+                                                to_hex(&finished.verify_data)
+                                            );
+                                            debug!("2 message: {:?}", to_hex(&result));
+                                        }
+                                        _ => {
+                                            // TODO: Add something here? :D
+                                            // NOTE: Might cause problems down the line, maybe update after all messages in one record
+                                            // have been handled.
+                                            // Add handshake messages to hasher
+                                            sha256.update(
+                                                handshake
+                                                    .as_bytes()
+                                                    .expect("Failed to parse Handshake message"),
+                                            );
+                                            debug!(
+                                                "Handshake message bytes: {:?}",
+                                                &handshake.message
+                                            );
+                                            debug!(
+                                                "Added {:?} message to hasher",
+                                                &handshake.msg_type
+                                            );
+                                        }
+                                    }
                                 }
 
                                 // Get updated hash
-                                let transcript_hash = sha256.clone().finalize();
-                                debug!("Hash: {}", to_hex(&transcript_hash));
+                                //let transcript_hash = sha256.clone().finalize();
+                                //debug!("Hash: {}", to_hex(&transcript_hash));
 
                                 // Update keys
-                                handshake_keys.key_schedule(&transcript_hash)
+                                //handshake_keys.key_schedule(&transcript_hash)
                             }
                             ContentType::Alert => {
                                 // NOTE: Alert caused by invalid signature_algorithm might be encrypted with only
@@ -521,6 +560,30 @@ fn main() {
                     }
                 }
             }
+
+            // Not needed but just for the fun of it
+            // Copied from OpenSSL message log
+            // TODO: Create a proper message type in tls_record.rs
+            let change_cipher_spec_record = TLSRecord {
+                record_type: ContentType::ChangeCipherSpec,
+                legacy_record_version: TLS_VERSION_COMPATIBILITY,
+                length: 1,
+                fragment: vec![1],
+            };
+
+            // Send the constructed request to the server
+            match stream.write_all(
+                &change_cipher_spec_record
+                    .as_bytes()
+                    .expect("Failed to serialize TLS Record into bytes"),
+            ) {
+                Ok(()) => {
+                    info!("The Change Cipher Spec request has been sent...");
+                }
+                Err(e) => {
+                    error!("Failed to send the request: {e}");
+                }
+            };
         }
         Err(e) => {
             error!("Failed to connect: {e}");
