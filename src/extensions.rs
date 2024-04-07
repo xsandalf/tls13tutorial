@@ -83,6 +83,7 @@ impl Extension {
                 ));
             }
         };
+
         // Use placeholder `Unserialized` for now, not all extension data types are implemented
         //Ok(Box::new(Extension {
         //    origin,
@@ -202,8 +203,8 @@ impl ByteSerializable for ExtensionData {
     }
 
     fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("LOLOLOLOL")
-        // TODO: Needs to be tested.
+        todo!("ExtensionData from_bytes() not implemented")
+        // NOTE: This is not needed because Extension::from_bytes() calls specific extensions from_bytes() directly
     }
 }
 
@@ -345,6 +346,18 @@ impl std::fmt::Display for ServerNameList {
 impl ByteSerializable for ServerNameList {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
+        // A server that receives a client hello containing the "server_name" extension
+        // MAY use the information contained in the extension to guide its selection of
+        // an appropriate certificate to return to the client, and/or other aspects of security policy.
+        // In this event, the server SHALL include an extension of type "server_name" in the (extended) server hello.
+        // The "extension_data" field of this extension SHALL be empty.
+        // If server_name_list is empty, assume above and return Ok
+        // TODO: Create seperate extension for when server sends ServerNameList,
+        // same way as KeyShareClientHello and KeyShareServerHello
+        if self.server_name_list.is_empty() {
+            return Some(bytes);
+        }
+
         for server_name in &self.server_name_list {
             bytes.push(server_name.name_type as u8);
             // 2 byte length determinant for the ASCII byte presentation of the name
@@ -356,6 +369,7 @@ impl ByteSerializable for ServerNameList {
             );
             bytes.extend_from_slice(&server_name.host_name);
         }
+
         // 2 byte length determinant for the whole `ServerNameList`
         bytes.splice(
             0..0,
