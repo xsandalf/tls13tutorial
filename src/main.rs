@@ -36,6 +36,9 @@ use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 use rasn::types::UtcTime;
 use rasn_pkix::Time;
 
+use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+use p256::EncodedPoint;
+
 type HmacSha256 = Hmac<Sha256>;
 
 const DEBUGGING_EPHEMERAL_SECRET: [u8; 32] = [
@@ -496,6 +499,7 @@ fn main() {
                                 // plaintext.content should not have any extra bytes
                                 //debug!("Hash: {}", to_hex(&sha256.clone().finalize()));
                                 let mut content_bytes = ByteParser::from(plaintext.content);
+                                let mut cert_data = Vec::new();
                                 while !content_bytes.is_empty() {
                                     let handshake = *Handshake::from_bytes(&mut content_bytes)
                                         .expect("Failed to parse Handshake message");
@@ -509,6 +513,8 @@ fn main() {
                                             let cert_copy = certificate.clone();
                                             let cert_entry =
                                                 cert_copy.certificate_list.first().unwrap();
+                                            cert_data
+                                                .extend_from_slice(&cert_entry.certificate_data);
                                             let enc_cert = &cert_entry.certificate_data;
                                             let cert = rasn::der::decode::<rasn_pkix::Certificate>(
                                                 enc_cert,
@@ -577,6 +583,47 @@ fn main() {
 
                                             // TODO: Check if Certificate is revoked
                                             // NOTE: Too difficult to implemenet currently
+                                        }
+                                        HandshakeMessage::CertificateVerify(certificate_verify) => {
+                                            debug!("Verify this cert data: {:?}", cert_data);
+                                            // Parse certificate
+                                            let cert = rasn::der::decode::<rasn_pkix::Certificate>(
+                                                &cert_data,
+                                            )
+                                            .expect("Failed to parse Certificate");
+
+                                            // Extract certificate public key
+                                            let mut cert_public_key = cert
+                                                .tbs_certificate
+                                                .subject_public_key_info
+                                                .subject_public_key;
+                                            let mut pkey: Vec<u8> = Vec::new();
+                                            cert_public_key
+                                                .read_to_end(&mut pkey)
+                                                .expect("Failed to read Certificate public key");
+                                            debug!("Cert public key: {:?}", pkey);
+                                            debug!("Cert public key: {:?}", to_hex(&pkey));
+
+                                            // Create the message server signed to produce the signature
+                                            let mut message = vec![0x20; 64];
+                                            message.extend_from_slice(
+                                                b"TLS 1.3, server CertificateVerify",
+                                            );
+                                            message.push(0x00);
+                                            message.extend_from_slice(&sha256.clone().finalize());
+
+                                            // Load public key as EncodedPoint and use it initalize VerifyingKey
+                                            let enc_point = EncodedPoint::from_bytes(&pkey).expect("Failed to parse EncodedPoint from Certificate public key");
+                                            let ver_key =
+                                                VerifyingKey::from_encoded_point(&enc_point).expect("Failed to parse VerifyingKey from Certificate public key");
+                                            let signature = Signature::from_der(&certificate_verify.signature).expect("Failed to parse Signature from CertificateVerify signature");
+
+                                            // Verify certificate
+                                            let result = ver_key.verify(&message, &signature);
+                                            if result.is_err() {
+                                                // TODO: Terminate with alert "bad_certificate"
+                                                debug!("Sanity check: Certificate couldn't be verified");
+                                            }
                                         }
                                         HandshakeMessage::Finished(finished) => {
                                             let mut hmac = <HmacSha256 as Mac>::new_from_slice(
