@@ -17,6 +17,7 @@ chacha20poly1305 = "0.10.1"
 ecdsa = "0.16.9"
 hmac = "0.12.1"
 rasn = "0.14.0"
+rasn-pkix = "0.14.0"
 
 # Library target for fuzzing
 [lib]

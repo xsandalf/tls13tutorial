@@ -735,6 +735,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rasn-pkix"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3057c6097bf90ad2eb670bda73836eef3b79bbeda40f07f551bcb6d219b5813"
+dependencies = [
+ "rasn",
+]
+
+[[package]]
 name = "rayon"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -928,6 +937,7 @@ dependencies = [
  "pretty_assertions",
  "rand",
  "rasn",
+ "rasn-pkix",
  "sha2",
  "x25519-dalek",
 ]
