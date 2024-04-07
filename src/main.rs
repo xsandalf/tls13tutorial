@@ -6,6 +6,7 @@ use rand::rngs::OsRng;
 use std::collections::VecDeque;
 use std::io::{self, Read as SocketRead, Write as SocketWrite};
 use std::net::TcpStream;
+use std::vec;
 use tls13tutorial::alert::Alert;
 use tls13tutorial::display::to_hex;
 use tls13tutorial::extensions::{
@@ -14,7 +15,7 @@ use tls13tutorial::extensions::{
     ServerNameList, SignatureScheme, SupportedSignatureAlgorithms, SupportedVersions, VersionKind,
 };
 use tls13tutorial::handshake::{
-    cipher_suites, ClientHello, Handshake, HandshakeMessage, HandshakeType, Random,
+    cipher_suites, ClientHello, Finished, Handshake, HandshakeMessage, HandshakeType, Random,
     TLS_VERSION_1_3, TLS_VERSION_COMPATIBILITY,
 };
 use tls13tutorial::parser::ByteParser;
@@ -247,6 +248,10 @@ fn main() {
         Ok(mut stream) => {
             info!("Successfully connected to the server '{address}'.");
 
+            ////////////////////////////
+            // This sends ClientHello //
+            ////////////////////////////
+
             // Generate the ClientHello message with the help of the data structures
             // Selects the cipher suite and properties
             let client_hello = ClientHello {
@@ -359,6 +364,9 @@ fn main() {
                 std::process::exit(1)
             });
 
+            //////////////////////////////////////////////////////////////////////////////////////////////
+            // This receives ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished //
+            //////////////////////////////////////////////////////////////////////////////////////////////
             for record in response_records {
                 match record.record_type {
                     ContentType::Alert => match Alert::from_bytes(&mut record.fragment.into()) {
@@ -504,6 +512,7 @@ fn main() {
                                                     .verify_slice(&finished.verify_data)
                                                     .is_ok()
                                             );
+                                            // TODO: Terminate with "decrypt_error" if HMAC verify is false
                                             let result = hmac.finalize().into_bytes();
                                             debug!(
                                                 "1 message: {:?}",
@@ -513,24 +522,18 @@ fn main() {
                                         }
                                         _ => {
                                             // TODO: Add something here? :D
-                                            // NOTE: Might cause problems down the line, maybe update after all messages in one record
-                                            // have been handled.
-                                            // Add handshake messages to hasher
-                                            sha256.update(
-                                                handshake
-                                                    .as_bytes()
-                                                    .expect("Failed to parse Handshake message"),
-                                            );
-                                            debug!(
-                                                "Handshake message bytes: {:?}",
-                                                &handshake.message
-                                            );
-                                            debug!(
-                                                "Added {:?} message to hasher",
-                                                &handshake.msg_type
-                                            );
                                         }
                                     }
+                                    // NOTE: Might cause problems down the line, maybe update after all messages in one record
+                                    // have been handled.
+                                    // Add handshake messages to hasher
+                                    sha256.update(
+                                        handshake
+                                            .as_bytes()
+                                            .expect("Failed to parse Handshake message"),
+                                    );
+                                    debug!("Handshake message bytes: {:?}", &handshake.message);
+                                    debug!("Added {:?} message to hasher", &handshake.msg_type);
                                 }
 
                                 // Get updated hash
@@ -579,6 +582,115 @@ fn main() {
             ) {
                 Ok(()) => {
                     info!("The Change Cipher Spec request has been sent...");
+                }
+                Err(e) => {
+                    error!("Failed to send the request: {e}");
+                }
+            };
+
+            /////////////////////////
+            // This sends Finished //
+            /////////////////////////
+
+            // Calculate verify_data
+            let mut hmac =
+                <HmacSha256 as Mac>::new_from_slice(&handshake_keys.client_hs_finished_key)
+                    .expect("Failed to initiate HMAC with key");
+            // Server Finished message is already added to hasher
+            let transcript_hash = sha256.clone().finalize();
+            //handshake_keys.key_schedule(&transcript_hash);
+            hmac.update(&transcript_hash);
+            let result = hmac.finalize();
+            // Create Client Finished message
+            let client_finished = Finished {
+                verify_data: result.into_bytes().to_vec(),
+            };
+
+            // Create Handshake message for Client Finished
+            let handshake = Handshake {
+                msg_type: HandshakeType::Finished,
+                length: u32::try_from(
+                    client_finished
+                        .as_bytes()
+                        .expect("Failed to serialize Finished message into bytes")
+                        .len(),
+                )
+                .expect("Finished message too long"),
+                message: HandshakeMessage::Finished(client_finished.clone()),
+            };
+
+            // Get Handshake bytes
+            let finished_handshake_bytes = handshake
+                .as_bytes()
+                .expect("Failed to serialize Handshake message into bytes");
+
+            // Create TLSInnerPlaintext for Handshake message
+            let plaintext = TLSInnerPlaintext {
+                content: finished_handshake_bytes,
+                content_type: ContentType::Handshake,
+                zeros: Vec::new(),
+            };
+
+            // Get Plaintext bytes
+            let plaintext_bytes = plaintext
+                .as_bytes()
+                .expect("Failed to serialize TLSInnerPlaintext into bytes");
+
+            // Encrypt TLSInnerPlaintext
+            // Create additional associated data for encryption
+            let mut aad = Vec::new();
+            aad.push(ContentType::ApplicationData as u8);
+            aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
+            aad.extend_from_slice(&plaintext_bytes.len().to_be_bytes());
+            debug!("Aad: {}", to_hex(&aad));
+            let payload = Payload {
+                msg: &plaintext_bytes,
+                aad: &aad,
+            };
+
+            // NOTE: Stupid alert
+            let mut iv = vec![0u8; 4];
+            iv.splice(4.., handshake_keys.client_seq_num.to_be_bytes().to_vec());
+            debug!("IV: {}", to_hex(&iv));
+
+            // XOR iv and server_hs_iv to create decrytpion nonce
+            let nonce: Vec<u8> = iv
+                .iter()
+                .zip(handshake_keys.client_hs_iv.iter())
+                .map(|(&x1, &x2)| x1 ^ x2)
+                .collect();
+            debug!("Nonce: {}", to_hex(&nonce));
+
+            // Encryption cipher
+            let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.client_hs_key);
+            debug!("{:?}", cipher.is_ok());
+
+            // Encrypt record
+            let result = cipher
+                .unwrap()
+                .encrypt(Nonce::from_slice(&nonce), payload)
+                .unwrap();
+            debug!("Raw encrypted data: {:?}", result);
+
+            // Update sequence counter
+            handshake_keys.client_seq_num += 1;
+
+            // Create TLSRecord for Encrypted message
+            let request_record = TLSRecord {
+                record_type: ContentType::ApplicationData,
+                legacy_record_version: TLS_VERSION_COMPATIBILITY,
+                length: u16::try_from(result.len()).expect("Encrypted message too long"),
+                fragment: result.clone(),
+            };
+
+            // Send the constructed request to the server
+            match stream.write_all(
+                &request_record
+                    .as_bytes()
+                    .expect("Failed to serialize TLS Record into bytes"),
+            ) {
+                Ok(()) => {
+                    info!("The Finished request has been sent...");
                 }
                 Err(e) => {
                     error!("Failed to send the request: {e}");
