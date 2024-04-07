@@ -112,6 +112,18 @@ impl ByteSerializable for Handshake {
             HandshakeMessage::ClientHello(client_hello) => {
                 bytes.extend_from_slice(&client_hello.as_bytes()?);
             }
+            HandshakeMessage::ServerHello(server_hello) => {
+                bytes.extend_from_slice(&server_hello.as_bytes()?);
+            }
+            HandshakeMessage::EncryptedExtensions(encrypted_extensions) => {
+                bytes.extend_from_slice(&encrypted_extensions.as_bytes()?);
+            }
+            HandshakeMessage::Certificate(certificate) => {
+                bytes.extend_from_slice(&certificate.as_bytes()?);
+            }
+            HandshakeMessage::CertificateVerify(certificate_verify) => {
+                bytes.extend_from_slice(&certificate_verify.as_bytes()?);
+            }
             HandshakeMessage::Finished(finished) => {
                 bytes.extend_from_slice(&finished.as_bytes()?);
             }
@@ -144,29 +156,37 @@ impl ByteSerializable for Handshake {
             )
         })?;
         debug!("Handshake message length: {:?}", msg_length);
+        let mut hs_bytes = ByteParser::new(VecDeque::from(bytes.get_bytes(msg_length as usize)));
+        let mut checksum = Vec::new();
+        #[cfg(debug_assertions)]
+        {
+            checksum.push(hs_type.clone() as u8);
+            checksum.extend_from_slice(&msg_length.clone().to_be_bytes()[1..]);
+            checksum.extend(hs_bytes.deque.clone().iter());
+        }
         let hs_message = match hs_type {
             HandshakeType::ClientHello => {
-                let client_hello = ClientHello::from_bytes(bytes)?;
+                let client_hello = ClientHello::from_bytes(&mut hs_bytes)?;
                 HandshakeMessage::ClientHello(*client_hello)
             }
             HandshakeType::ServerHello => {
-                let server_hello = ServerHello::from_bytes(bytes)?;
+                let server_hello = ServerHello::from_bytes(&mut hs_bytes)?;
                 HandshakeMessage::ServerHello(*server_hello)
             }
             HandshakeType::EncryptedExtensions => {
-                let encrypted_extensions = EncryptedExtensions::from_bytes(bytes)?;
+                let encrypted_extensions = EncryptedExtensions::from_bytes(&mut hs_bytes)?;
                 HandshakeMessage::EncryptedExtensions(*encrypted_extensions)
             }
             HandshakeType::Certificate => {
-                let certificate = Certificate::from_bytes(bytes)?;
+                let certificate = Certificate::from_bytes(&mut hs_bytes)?;
                 HandshakeMessage::Certificate(*certificate)
             }
             HandshakeType::CertificateVerify => {
-                let certificate_verify = CertificateVerify::from_bytes(bytes)?;
+                let certificate_verify = CertificateVerify::from_bytes(&mut hs_bytes)?;
                 HandshakeMessage::CertificateVerify(*certificate_verify)
             }
             HandshakeType::Finished => {
-                let finished = Finished::from_bytes(bytes)?;
+                let finished = Finished::from_bytes(&mut hs_bytes)?;
                 HandshakeMessage::Finished(*finished)
             }
             _ => {
@@ -176,11 +196,16 @@ impl ByteSerializable for Handshake {
                 ))
             }
         };
-        Ok(Box::from(Handshake {
+        let handshake = Handshake {
             msg_type: hs_type,
             length: msg_length,
             message: hs_message,
-        }))
+        };
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(checksum, handshake.as_bytes().unwrap());
+        }
+        Ok(Box::from(handshake))
     }
 }
 
@@ -201,11 +226,21 @@ impl ByteSerializable for Finished {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        let checksum;
+        #[cfg(debug_assertions)]
+        {
+            checksum = bytes.deque.clone();
+        }
         // DONE, tested. todo!("Implement Finished::from_bytes")
         // TODO: Check HMAC in use and choose length based on it
         let length = 32;
         let verify_data = bytes.get_bytes(length as usize);
-        Ok(Box::new(Finished { verify_data }))
+        let finished = Finished { verify_data };
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(checksum, finished.as_bytes().unwrap());
+        }
+        Ok(Box::new(finished))
     }
 }
 
@@ -445,6 +480,11 @@ impl ByteSerializable for Certificate {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        let checksum;
+        #[cfg(debug_assertions)]
+        {
+            checksum = bytes.deque.clone();
+        }
         // TODO: Untested. todo!("Implement Certificate::from_bytes")
         // TODO: Refactor, this is a mess
         debug!("Raw certificate data: {:?}", bytes);
@@ -522,11 +562,16 @@ impl ByteSerializable for Certificate {
             // 1 for certificate_type, 3 for certificate_data length, 2 for extensions length
             i += 1 + 3 + cert_data_length + 2 + (extension_length as u32);
         }
-
-        Ok(Box::new(Certificate {
+        let certificate = Certificate {
             certificate_request_context: crc,
             certificate_list: cert_entries,
-        }))
+        };
+        // Helper to identify that decoded bytes are encoded back to the same bytes
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(checksum, certificate.as_bytes().unwrap());
+        }
+        Ok(Box::new(certificate))
     }
 }
 
@@ -550,6 +595,11 @@ impl ByteSerializable for EncryptedExtensions {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        let checksum;
+        #[cfg(debug_assertions)]
+        {
+            checksum = bytes.deque.clone();
+        }
         //DONE, tested.
         // 2 byte length determinant for the extensions
         let extension_length = bytes.get_u16().ok_or_else(|| {
@@ -561,14 +611,21 @@ impl ByteSerializable for EncryptedExtensions {
         debug!("Encrypted extension length: {:?}", extension_length);
         let mut extensions = Vec::new();
         let extension_bytes = bytes.get_bytes(extension_length as usize);
+        debug!("Encrypted extension bytes: {:?}", extension_bytes);
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
             let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
+            debug!("Extension bytes: {:?}", extension.as_bytes());
             extensions.push(*extension);
         }
-
-        Ok(Box::new(EncryptedExtensions { extensions }))
+        let encrypted_extensions = EncryptedExtensions { extensions };
+        // Helper to identify that decoded bytes are encoded back to the same bytes
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(checksum, encrypted_extensions.as_bytes().unwrap());
+        }
+        Ok(Box::new(encrypted_extensions))
     }
 }
 
@@ -591,6 +648,11 @@ impl ByteSerializable for CertificateVerify {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        let checksum;
+        #[cfg(debug_assertions)]
+        {
+            checksum = bytes.deque.clone();
+        }
         // TODO: Tested
         let signature_scheme = *SignatureScheme::from_bytes(bytes)
             .expect("Failed to parse CertificateVerify algorithm");
@@ -602,12 +664,18 @@ impl ByteSerializable for CertificateVerify {
                 "Invalid CertificateVerify signature length",
             )
         })?;
-
+        debug!("CertificateVerify signature length: {:?}", length);
         let signature = bytes.get_bytes(length as usize);
-
-        Ok(Box::new(CertificateVerify {
+        debug!("CertificateVerify signature: {:?}", to_hex(&signature));
+        let certificate_verify = CertificateVerify {
             algorithm: signature_scheme,
             signature,
-        }))
+        };
+        // Helper to identify that decoded bytes are encoded back to the same bytes
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(checksum, certificate_verify.as_bytes().unwrap());
+        }
+        Ok(Box::new(certificate_verify))
     }
 }
