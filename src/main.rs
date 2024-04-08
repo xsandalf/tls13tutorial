@@ -48,6 +48,7 @@ const DEBUGGING_EPHEMERAL_SECRET: [u8; 32] = [
 
 /// Key calculation and resulting keys, includes initial random values for `ClientHello`
 /// Check section about [KeySchedule](https://datatracker.ietf.org/doc/html/rfc8446#section-7.1)
+/// TODO: Separate Handshake and Application keys
 struct HandshakeKeys {
     random_seed: Random,
     session_id: Random,
@@ -254,6 +255,37 @@ fn process_tcp_stream(mut stream: &mut TcpStream) -> io::Result<VecDeque<u8>> {
     Ok(buffer)
 }
 
+/// Write the data to TCP stream
+fn write_tcp_stream(stream: &mut TcpStream, record: &TLSRecord) {
+    match stream.write_all(
+        &record
+            .as_bytes()
+            .expect("Failed to serialize TLS Record into bytes"),
+    ) {
+        Ok(()) => {
+            info!("The {:?} request has been sent...", record.record_type);
+        }
+        Err(e) => {
+            error!("Failed to send the request: {e}");
+        }
+    }
+}
+
+fn read_tcp_stream(stream: &mut TcpStream) -> io::Result<Vec<TLSRecord>> {
+    // Read all the response data into a `VecDeque` buffer
+    let buffer = process_tcp_stream(stream).unwrap_or_else(|e| {
+        error!("Failed to read the TCP response: {e}");
+        std::process::exit(1)
+    });
+
+    let response_records = tls13tutorial::get_records(buffer).unwrap_or_else(|e| {
+        error!("Failed to process the records: {e}");
+        std::process::exit(1)
+    });
+
+    Ok(response_records)
+}
+
 /// Main event loop for the TLS 1.3 client implementation
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -280,7 +312,7 @@ fn main() {
 
     // Create SHA256 hasher for Transcript-Hash
     // Have to use this "hack" because of a rust analyzer bug
-    // ra assumes the wrong new() and throws false positive: expected 1 argument, found 0 rust-analyzer(E0107)
+    // r-a assumes the wrong new() and throws false positive: expected 1 argument, found 0 rust-analyzer(E0107)
     let mut sha256 = Sha256::new_with_prefix([]);
 
     match TcpStream::connect(address) {
@@ -348,6 +380,7 @@ fn main() {
                     },
                 ],
             };
+
             info!("Sending ClientHello as follows...\n");
             println!("{client_hello}");
             // Alternative styles
@@ -379,35 +412,16 @@ fn main() {
             };
 
             // Send the constructed request to the server
-            match stream.write_all(
-                &request_record
-                    .as_bytes()
-                    .expect("Failed to serialize TLS Record into bytes"),
-            ) {
-                Ok(()) => {
-                    info!("The handshake request has been sent...");
-                }
-                Err(e) => {
-                    error!("Failed to send the request: {e}");
-                }
-            }
+            write_tcp_stream(&mut stream, &request_record);
 
             // Read all the response data into a `VecDeque` buffer
-            let buffer = process_tcp_stream(&mut stream).unwrap_or_else(|e| {
-                error!("Failed to read the TCP response: {e}");
-                std::process::exit(1)
-            });
-
-            let response_records = tls13tutorial::get_records(buffer).unwrap_or_else(|e| {
-                error!("Failed to process the records: {e}");
-                std::process::exit(1)
-            });
+            let response_records = read_tcp_stream(&mut stream);
 
             //////////////////////////////////////////////////////////////////////////////////////////////
             // This receives ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished //
             //////////////////////////////////////////////////////////////////////////////////////////////
 
-            for record in response_records {
+            for record in response_records.unwrap() {
                 match record.record_type {
                     ContentType::Alert => match Alert::from_bytes(&mut record.fragment.into()) {
                         Ok(alert) => {
@@ -726,18 +740,7 @@ fn main() {
             };
 
             // Send the constructed request to the server
-            match stream.write_all(
-                &change_cipher_spec_record
-                    .as_bytes()
-                    .expect("Failed to serialize TLS Record into bytes"),
-            ) {
-                Ok(()) => {
-                    info!("The Change Cipher Spec request has been sent...");
-                }
-                Err(e) => {
-                    error!("Failed to send the request: {e}");
-                }
-            };
+            write_tcp_stream(&mut stream, &change_cipher_spec_record);
 
             /////////////////////////
             // This sends Finished //
@@ -836,18 +839,7 @@ fn main() {
             };
 
             // Send the constructed request to the server
-            match stream.write_all(
-                &request_record
-                    .as_bytes()
-                    .expect("Failed to serialize TLS Record into bytes"),
-            ) {
-                Ok(()) => {
-                    info!("The Finished request has been sent...");
-                }
-                Err(e) => {
-                    error!("Failed to send the request: {e}");
-                }
-            };
+            write_tcp_stream(&mut stream, &request_record);
 
             // Reset sequence numbers and calculate application keys
             handshake_keys.server_seq_num = 0;
@@ -926,35 +918,16 @@ fn main() {
             };
 
             // Send the constructed request to the server
-            match stream.write_all(
-                &request_record
-                    .as_bytes()
-                    .expect("Failed to serialize TLS Record into bytes"),
-            ) {
-                Ok(()) => {
-                    info!("The Application Data request has been sent...");
-                }
-                Err(e) => {
-                    error!("Failed to send the request: {e}");
-                }
-            };
+            write_tcp_stream(&mut stream, &request_record);
 
             //////////////////////////////////////////////
             // This reads response to  Application Data //
             //////////////////////////////////////////////
 
             // Read all the response data into a `VecDeque` buffer
-            let buffer = process_tcp_stream(&mut stream).unwrap_or_else(|e| {
-                error!("Failed to read the TCP response: {e}");
-                std::process::exit(1)
-            });
+            let response_records = read_tcp_stream(&mut stream);
 
-            let response_records = tls13tutorial::get_records(buffer).unwrap_or_else(|e| {
-                error!("Failed to process the records: {e}");
-                std::process::exit(1)
-            });
-
-            for record in response_records {
+            for record in response_records.unwrap() {
                 // No need to match, everything should be ApplicationData
                 // Create additional associated data for decryption
                 let mut aad = Vec::new();
