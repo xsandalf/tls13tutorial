@@ -255,7 +255,7 @@ fn process_tcp_stream(mut stream: &mut TcpStream) -> io::Result<VecDeque<u8>> {
     Ok(buffer)
 }
 
-/// Write the data to TCP stream
+/// Write TLSRecord to TCP stream
 fn write_tcp_stream(stream: &mut TcpStream, record: &TLSRecord) {
     match stream.write_all(
         &record
@@ -271,6 +271,7 @@ fn write_tcp_stream(stream: &mut TcpStream, record: &TLSRecord) {
     }
 }
 
+// Read TLSRecords from TCP stream
 fn read_tcp_stream(stream: &mut TcpStream) -> io::Result<Vec<TLSRecord>> {
     // Read all the response data into a `VecDeque` buffer
     let buffer = process_tcp_stream(stream).unwrap_or_else(|e| {
@@ -284,6 +285,33 @@ fn read_tcp_stream(stream: &mut TcpStream) -> io::Result<Vec<TLSRecord>> {
     });
 
     Ok(response_records)
+}
+
+// Create payload aad to be included in the encrypted payload from TLSInnerPlaintext record bytes
+fn create_payload_aad(plaintext_bytes: &Vec<u8>, encryption_padding: usize) -> io::Result<Vec<u8>> {
+    let mut aad = Vec::new();
+    aad.push(ContentType::ApplicationData as u8);
+    aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
+    // Encrypting adds x bytes to the size. In our case that x = 16
+    aad.extend_from_slice(
+        &u16::try_from(plaintext_bytes.len() + encryption_padding)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    Ok(aad)
+}
+
+// Calculate verify_data for client Handshake Finished message
+fn calculate_verify_data(
+    handshake_keys: &mut HandshakeKeys,
+    transcript_hash: &[u8],
+) -> io::Result<Vec<u8>> {
+    let mut hmac = <HmacSha256 as Mac>::new_from_slice(&handshake_keys.client_hs_finished_key)
+        .expect("Failed to initiate HMAC with key");
+    hmac.update(&transcript_hash);
+    let result = hmac.finalize();
+
+    Ok(result.into_bytes().to_vec())
 }
 
 /// Main event loop for the TLS 1.3 client implementation
@@ -746,19 +774,14 @@ fn main() {
             // This sends Finished //
             /////////////////////////
 
-            // Calculate verify_data
-            let mut hmac =
-                <HmacSha256 as Mac>::new_from_slice(&handshake_keys.client_hs_finished_key)
-                    .expect("Failed to initiate HMAC with key");
-            // Server Finished message is already added to hasher
+            // CertificateVerify is already added to hasher
             let transcript_hash = sha256.clone().finalize();
-            //handshake_keys.key_schedule(&transcript_hash);
-            hmac.update(&transcript_hash);
-            let result = hmac.finalize();
+
+            // Calculate verify_data
+            let verify_data = calculate_verify_data(&mut handshake_keys, &transcript_hash).unwrap();
+
             // Create Client Finished message
-            let client_finished = Finished {
-                verify_data: result.into_bytes().to_vec(),
-            };
+            let client_finished = Finished { verify_data };
 
             // Create Handshake message for Client Finished
             let handshake = Handshake {
@@ -792,12 +815,8 @@ fn main() {
 
             // Encrypt TLSInnerPlaintext
             // Create additional associated data for encryption
-            let mut aad = Vec::new();
-            aad.push(ContentType::ApplicationData as u8);
-            aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
-            // Encrypting adds 16 bytes to the size
-            aad.extend_from_slice(&((plaintext_bytes.len() + 16) as u16).to_be_bytes());
-            debug!("Aad: {}", to_hex(&aad));
+            let aad = create_payload_aad(&plaintext_bytes, 16).unwrap();
+
             let payload = Payload {
                 msg: &plaintext_bytes,
                 aad: &aad,
@@ -868,12 +887,8 @@ fn main() {
 
             // Encrypt TLSInnerPlaintext
             // Create additional associated data for encryption
-            let mut aad = Vec::new();
-            aad.push(ContentType::ApplicationData as u8);
-            aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
-            // Encrypting adds 16 bytes to the size
-            aad.extend_from_slice(&((plaintext_bytes.len() + 16) as u16).to_be_bytes());
-            debug!("Aad: {}", to_hex(&aad));
+            let aad = create_payload_aad(&plaintext_bytes, 16).unwrap();
+
             let payload = Payload {
                 msg: &plaintext_bytes,
                 aad: &aad,
