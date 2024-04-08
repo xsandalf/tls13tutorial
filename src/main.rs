@@ -287,17 +287,27 @@ fn read_tcp_stream(stream: &mut TcpStream) -> io::Result<Vec<TLSRecord>> {
     Ok(response_records)
 }
 
-// Create payload aad to be included in the encrypted payload from TLSInnerPlaintext record bytes
-fn create_payload_aad(plaintext_bytes: &Vec<u8>, encryption_padding: usize) -> io::Result<Vec<u8>> {
+// Create payload aad to be included in the encryption payload from TLSInnerPlaintext record bytes
+fn create_encryption_aad(record_bytes: &Vec<u8>, encryption_padding: usize) -> io::Result<Vec<u8>> {
     let mut aad = Vec::new();
     aad.push(ContentType::ApplicationData as u8);
     aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
     // Encrypting adds x bytes to the size. In our case that x = 16
     aad.extend_from_slice(
-        &u16::try_from(plaintext_bytes.len() + encryption_padding)
+        &u16::try_from(record_bytes.len() + encryption_padding)
             .unwrap()
             .to_be_bytes(),
     );
+    Ok(aad)
+}
+
+// Create payload aad to be included in the decryption payload from TLSRecord bytes
+fn create_decryption_aad(record: &TLSRecord) -> io::Result<Vec<u8>> {
+    let mut aad = Vec::new();
+    aad.push(record.record_type as u8);
+    aad.extend_from_slice(&record.legacy_record_version.to_be_bytes());
+    aad.extend_from_slice(&record.length.to_be_bytes());
+
     Ok(aad)
 }
 
@@ -520,11 +530,8 @@ fn main() {
                         // Done, tested. warn!("TODO: Decryption of the data and decoding of the all extensions not implemented");
 
                         // Create additional associated data for decryption
-                        let mut aad = Vec::new();
-                        aad.push(record.record_type as u8);
-                        aad.extend_from_slice(&record.legacy_record_version.to_be_bytes());
-                        aad.extend_from_slice(&record.length.to_be_bytes());
-                        debug!("Aad: {}", to_hex(&aad));
+                        let aad = create_decryption_aad(&record).unwrap();
+
                         let payload = Payload {
                             msg: &record.fragment,
                             aad: &aad,
@@ -815,7 +822,7 @@ fn main() {
 
             // Encrypt TLSInnerPlaintext
             // Create additional associated data for encryption
-            let aad = create_payload_aad(&plaintext_bytes, 16).unwrap();
+            let aad = create_encryption_aad(&plaintext_bytes, 16).unwrap();
 
             let payload = Payload {
                 msg: &plaintext_bytes,
@@ -887,7 +894,7 @@ fn main() {
 
             // Encrypt TLSInnerPlaintext
             // Create additional associated data for encryption
-            let aad = create_payload_aad(&plaintext_bytes, 16).unwrap();
+            let aad = create_encryption_aad(&plaintext_bytes, 16).unwrap();
 
             let payload = Payload {
                 msg: &plaintext_bytes,
@@ -916,10 +923,6 @@ fn main() {
                 .unwrap()
                 .encrypt(Nonce::from_slice(&nonce), payload)
                 .unwrap();
-            debug!("Raw encrypted data: {:?}", result);
-            debug!("aad size: {:?}", (aad.len() as u16));
-            debug!("Decrypted size: {:?}", (plaintext_bytes.len() as u16));
-            debug!("Encrypted size: {:?}", (result.len() as u16));
 
             // Update sequence counter
             handshake_keys.client_seq_num += 1;
@@ -945,13 +948,8 @@ fn main() {
             for record in response_records.unwrap() {
                 // No need to match, everything should be ApplicationData
                 // Create additional associated data for decryption
-                let mut aad = Vec::new();
-                aad.push(record.record_type as u8);
-                debug!("Aad type: {}", to_hex(&aad));
-                aad.extend_from_slice(&record.legacy_record_version.to_be_bytes());
-                debug!("Aad version: {}", to_hex(&aad));
-                aad.extend_from_slice(&record.length.to_be_bytes());
-                debug!("Aad: {}", to_hex(&aad));
+                let aad = create_decryption_aad(&record).unwrap();
+
                 let payload = Payload {
                     msg: &record.fragment,
                     aad: &aad,
