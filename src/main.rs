@@ -457,6 +457,9 @@ fn main() {
                 .as_bytes()
                 .expect("Failed to serialize Handshake message into bytes");
 
+            // Add handshake message to hasher
+            sha256.update(client_handshake_bytes.clone());
+
             let request_record = TLSRecord {
                 record_type: ContentType::Handshake,
                 legacy_record_version: TLS_VERSION_COMPATIBILITY,
@@ -517,8 +520,7 @@ fn main() {
                                         handshake_keys.dh_server_public =
                                             PublicKey::from(server_public_key);
 
-                                        // Add handshake messages to hasher
-                                        sha256.update(client_handshake_bytes.clone());
+                                        // Add handshake message to hasher
                                         sha256.update(&hs_bytes);
 
                                         // Get updated hash
@@ -750,8 +752,6 @@ fn main() {
                                 }
                             }
                             ContentType::Alert => {
-                                // NOTE: Alert caused by invalid signature_algorithm might be encrypted with only
-                                // ClientHello and ServerHello transcript-hash keys
                                 let mut content_bytes = ByteParser::from(plaintext.content);
                                 let alert = *Alert::from_bytes(&mut content_bytes)
                                     .expect("Failed to parse Alert message");
