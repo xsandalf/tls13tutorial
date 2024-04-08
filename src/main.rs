@@ -324,6 +324,22 @@ fn calculate_verify_data(
     Ok(result.into_bytes().to_vec())
 }
 
+// Create nonce for ChaChaPolu1305 encryption/decryption
+fn create_nonce(sequence_number: u64, iv: &Vec<u8>) -> io::Result<Nonce> {
+    // NOTE: Stupid alert
+    let mut init_vec = vec![0u8; 4];
+    init_vec.splice(4.., sequence_number.to_be_bytes().to_vec());
+
+    // XOR iv and server_hs_iv to create decrytpion nonce
+    let nonce: Vec<u8> = init_vec
+        .iter()
+        .zip(iv.iter())
+        .map(|(&x1, &x2)| x1 ^ x2)
+        .collect();
+
+    Ok(*Nonce::from_slice(&nonce))
+}
+
 /// Main event loop for the TLS 1.3 client implementation
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -537,18 +553,11 @@ fn main() {
                             aad: &aad,
                         };
 
-                        // NOTE: Stupid alert
-                        let mut iv = vec![0u8; 4];
-                        iv.splice(4.., handshake_keys.server_seq_num.to_be_bytes().to_vec());
-                        debug!("IV: {}", to_hex(&iv));
-
-                        // XOR iv and server_hs_iv to create decrytpion nonce
-                        let nonce: Vec<u8> = iv
-                            .iter()
-                            .zip(handshake_keys.server_hs_iv.iter())
-                            .map(|(&x1, &x2)| x1 ^ x2)
-                            .collect();
-                        debug!("Nonce: {}", to_hex(&nonce));
+                        let nonce = create_nonce(
+                            handshake_keys.server_seq_num,
+                            &handshake_keys.server_hs_iv,
+                        )
+                        .unwrap();
 
                         // Decryption cipher
                         let cipher =
@@ -556,10 +565,7 @@ fn main() {
                         debug!("{:?}", cipher.is_ok());
 
                         // Decrypt record
-                        let result = cipher
-                            .unwrap()
-                            .decrypt(Nonce::from_slice(&nonce), payload)
-                            .unwrap();
+                        let result = cipher.unwrap().decrypt(&nonce, payload).unwrap();
                         debug!("Raw decrypted data: {:?}", result);
 
                         // Update sequence counter
@@ -829,28 +835,15 @@ fn main() {
                 aad: &aad,
             };
 
-            // NOTE: Stupid alert
-            let mut iv = vec![0u8; 4];
-            iv.splice(4.., handshake_keys.client_seq_num.to_be_bytes().to_vec());
-            debug!("IV: {}", to_hex(&iv));
-
-            // XOR iv and server_hs_iv to create decrytpion nonce
-            let nonce: Vec<u8> = iv
-                .iter()
-                .zip(handshake_keys.client_hs_iv.iter())
-                .map(|(&x1, &x2)| x1 ^ x2)
-                .collect();
-            debug!("Nonce: {}", to_hex(&nonce));
+            let nonce =
+                create_nonce(handshake_keys.client_seq_num, &handshake_keys.client_hs_iv).unwrap();
 
             // Encryption cipher
             let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.client_hs_key);
             debug!("{:?}", cipher.is_ok());
 
             // Encrypt record
-            let result = cipher
-                .unwrap()
-                .encrypt(Nonce::from_slice(&nonce), payload)
-                .unwrap();
+            let result = cipher.unwrap().encrypt(&nonce, payload).unwrap();
             debug!("Raw encrypted data: {:?}", result);
 
             // Update sequence counter
@@ -901,28 +894,15 @@ fn main() {
                 aad: &aad,
             };
 
-            // NOTE: Stupid alert
-            let mut iv = vec![0u8; 4];
-            iv.splice(4.., handshake_keys.client_seq_num.to_be_bytes().to_vec());
-            debug!("IV: {}", to_hex(&iv));
-
-            // XOR iv and server_hs_iv to create decrytpion nonce
-            let nonce: Vec<u8> = iv
-                .iter()
-                .zip(handshake_keys.client_ap_iv.iter())
-                .map(|(&x1, &x2)| x1 ^ x2)
-                .collect();
-            debug!("Nonce: {}", to_hex(&nonce));
+            let nonce =
+                create_nonce(handshake_keys.client_seq_num, &handshake_keys.client_ap_iv).unwrap();
 
             // Encryption cipher
             let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.client_ap_key);
             debug!("{:?}", cipher.is_ok());
 
             // Encrypt record
-            let result = cipher
-                .unwrap()
-                .encrypt(Nonce::from_slice(&nonce), payload)
-                .unwrap();
+            let result = cipher.unwrap().encrypt(&nonce, payload).unwrap();
 
             // Update sequence counter
             handshake_keys.client_seq_num += 1;
@@ -955,28 +935,16 @@ fn main() {
                     aad: &aad,
                 };
 
-                // NOTE: Stupid alert
-                let mut iv = vec![0u8; 4];
-                iv.splice(4.., handshake_keys.server_seq_num.to_be_bytes().to_vec());
-                debug!("IV: {}", to_hex(&iv));
-
-                // XOR iv and server_ap_iv to create decrytpion nonce
-                let nonce: Vec<u8> = iv
-                    .iter()
-                    .zip(handshake_keys.server_ap_iv.iter())
-                    .map(|(&x1, &x2)| x1 ^ x2)
-                    .collect();
-                debug!("Nonce: {}", to_hex(&nonce));
+                let nonce =
+                    create_nonce(handshake_keys.server_seq_num, &handshake_keys.server_ap_iv)
+                        .unwrap();
 
                 // Decryption cipher
                 let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.server_ap_key);
                 debug!("{:?}", cipher.is_ok());
 
                 // Decrypt record
-                let result = cipher
-                    .unwrap()
-                    .decrypt(Nonce::from_slice(&nonce), payload)
-                    .unwrap();
+                let result = cipher.unwrap().decrypt(&nonce, payload).unwrap();
                 debug!("Raw decrypted data: {:?}", result);
 
                 // Update sequence counter
