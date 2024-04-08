@@ -64,17 +64,21 @@ struct HandshakeKeys {
     server_hs_iv: Vec<u8>,
     server_hs_finished_key: Vec<u8>,
     server_seq_num: u64,
+    client_ap_key: Vec<u8>,
+    client_ap_iv: Vec<u8>,
+    server_ap_key: Vec<u8>,
+    server_ap_iv: Vec<u8>,
 }
 
 impl HandshakeKeys {
     #[must_use]
     fn new() -> Self {
         // Generate 32 bytes of random data as key length is 32 bytes in SHA-256
-        // let seed_random = rand::random::<[u8; 32]>();
+        //let random_seed = rand::random::<[u8; 32]>();
         // FIXME use random data instead of hardcoded seed
         // Hardcoded value has been used for debugging purposes
         let random_seed = DEBUGGING_EPHEMERAL_SECRET;
-        // let random_session_id = rand::random::<[u8; 32]>();
+        //let session_id = rand::random::<[u8; 32]>();
         let session_id = random_seed;
         // Generate a new Elliptic Curve Diffie-Hellman public-private key pair (X25519)
         let (dh_client_ephemeral_secret, dh_client_public);
@@ -104,6 +108,10 @@ impl HandshakeKeys {
             server_hs_iv: vec![0u8; 12],
             server_hs_finished_key: vec![0u8; 32],
             server_seq_num: 0,
+            client_ap_key: vec![0u8; 32],
+            client_ap_iv: vec![0u8; 32],
+            server_ap_key: vec![0u8; 32],
+            server_ap_iv: vec![0u8; 32],
         }
     }
 
@@ -142,6 +150,27 @@ impl HandshakeKeys {
         self.server_hs_iv = Self::derive_secret(&server_hs_traffic_secret, b"iv", &[], 12);
         self.server_hs_finished_key =
             Self::derive_secret(&server_hs_traffic_secret, b"finished", &[], 32);
+
+        let sha256_empty2 = Sha256::digest([]);
+        //derived_secret = HKDF-Expand-Label(key: handshake_secret, label: "derived", ctx: empty_hash, len: 48)
+        let derived_secret2 =
+            Self::derive_secret(&handshake_secret, b"derived", &sha256_empty2, 32);
+        //master_secret = HKDF-Extract(salt: derived_secret, key: 00...)
+        let (master_secret, _hk) = Hkdf::<Sha256>::extract(Some(&derived_secret2), &[0u8; 32]);
+        //client_secret = HKDF-Expand-Label(master_secret, b"c ap traffic", transcript_hash, 32)
+        let client_ap_secret =
+            Self::derive_secret(&master_secret, b"c ap traffic", transcript_hash, 32);
+        //client_application_key = HKDF-Expand-Label(client_secret, b"key", &[], 32)
+        self.client_ap_key = Self::derive_secret(&client_ap_secret, b"key", &[], 32);
+        //client_application_iv = HKDF-Expand-Label(client_secret, b"iv", &[], 12)
+        self.client_ap_iv = Self::derive_secret(&client_ap_secret, b"iv", &[], 12);
+        //server_secret = HKDF-Expand-Label(master_secret, b"s ap traffic", transcript_hash, 32)
+        let server_ap_secret =
+            Self::derive_secret(&master_secret, b"s ap traffic", transcript_hash, 32);
+        //server_application_key = HKDF-Expand-Label(server_secret, b"key", &[], 32)
+        self.server_ap_key = Self::derive_secret(&server_ap_secret, b"key", &[], 32);
+        //server_application_iv = HKDF-Expand-Label(server_secret, b"iv", &[], 12)
+        self.server_ap_iv = Self::derive_secret(&server_ap_secret, b"iv", &[], 12);
 
         // Print all the keys as hex strings
         debug!(
@@ -206,20 +235,22 @@ fn process_tcp_stream(mut stream: &mut TcpStream) -> io::Result<VecDeque<u8>> {
     let mut reader = io::BufReader::new(&mut stream);
     let mut buffer: VecDeque<u8> = VecDeque::new();
 
-    loop {
-        let mut chunk = [0; 4096];
-        match reader.read(&mut chunk) {
-            Ok(0) => break, // Connection closed by the sender
-            Ok(n) => {
-                info!("Received {n} bytes of data.");
-                buffer.extend(&chunk[..n]);
-            }
-            Err(e) => {
-                error!("Error when reading from the TCP stream: {}", e);
-                return Err(e);
-            }
+    //loop {
+    info!("Loop Loop Loop");
+    let mut chunk = [0; 4096];
+    match reader.read(&mut chunk) {
+        Ok(0) => info!("Okay"), //break, // Connection closed by the sender
+        Ok(n) => {
+            info!("Received {n} bytes of data.");
+            buffer.extend(&chunk[..n]);
+        }
+        Err(e) => {
+            error!("Error when reading from the TCP stream: {}", e);
+            return Err(e);
         }
     }
+    //}
+    info!("No Loop");
     Ok(buffer)
 }
 
@@ -375,6 +406,7 @@ fn main() {
             //////////////////////////////////////////////////////////////////////////////////////////////
             // This receives ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished //
             //////////////////////////////////////////////////////////////////////////////////////////////
+
             for record in response_records {
                 match record.record_type {
                     ContentType::Alert => match Alert::from_bytes(&mut record.fragment.into()) {
@@ -760,7 +792,8 @@ fn main() {
             let mut aad = Vec::new();
             aad.push(ContentType::ApplicationData as u8);
             aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
-            aad.extend_from_slice(&plaintext_bytes.len().to_be_bytes());
+            // Encrypting adds 16 bytes to the size
+            aad.extend_from_slice(&((plaintext_bytes.len() + 16) as u16).to_be_bytes());
             debug!("Aad: {}", to_hex(&aad));
             let payload = Payload {
                 msg: &plaintext_bytes,
@@ -815,6 +848,186 @@ fn main() {
                     error!("Failed to send the request: {e}");
                 }
             };
+
+            // Reset sequence numbers and calculate application keys
+            handshake_keys.server_seq_num = 0;
+            handshake_keys.client_seq_num = 0;
+            handshake_keys.key_schedule(&sha256.clone().finalize());
+
+            /////////////////////////////////
+            // This sends Application Data //
+            /////////////////////////////////
+
+            let application_data =
+                b"GET /robots.txt HTTP/1.1\r\nHost: cloudflare.com\r\nConnection: close\r\n\r\n"
+                    .to_vec();
+
+            // Create TLSInnerPlaintext for Handshake message
+            let plaintext = TLSInnerPlaintext {
+                content: application_data,
+                content_type: ContentType::ApplicationData,
+                zeros: Vec::new(),
+            };
+
+            // Get Plaintext bytes
+            let plaintext_bytes = plaintext
+                .as_bytes()
+                .expect("Failed to serialize TLSInnerPlaintext into bytes");
+
+            // Encrypt TLSInnerPlaintext
+            // Create additional associated data for encryption
+            let mut aad = Vec::new();
+            aad.push(ContentType::ApplicationData as u8);
+            aad.extend_from_slice(&TLS_VERSION_COMPATIBILITY.to_be_bytes());
+            // Encrypting adds 16 bytes to the size
+            aad.extend_from_slice(&((plaintext_bytes.len() + 16) as u16).to_be_bytes());
+            debug!("Aad: {}", to_hex(&aad));
+            let payload = Payload {
+                msg: &plaintext_bytes,
+                aad: &aad,
+            };
+
+            // NOTE: Stupid alert
+            let mut iv = vec![0u8; 4];
+            iv.splice(4.., handshake_keys.client_seq_num.to_be_bytes().to_vec());
+            debug!("IV: {}", to_hex(&iv));
+
+            // XOR iv and server_hs_iv to create decrytpion nonce
+            let nonce: Vec<u8> = iv
+                .iter()
+                .zip(handshake_keys.client_ap_iv.iter())
+                .map(|(&x1, &x2)| x1 ^ x2)
+                .collect();
+            debug!("Nonce: {}", to_hex(&nonce));
+
+            // Encryption cipher
+            let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.client_ap_key);
+            debug!("{:?}", cipher.is_ok());
+
+            // Encrypt record
+            let result = cipher
+                .unwrap()
+                .encrypt(Nonce::from_slice(&nonce), payload)
+                .unwrap();
+            debug!("Raw encrypted data: {:?}", result);
+            debug!("aad size: {:?}", (aad.len() as u16));
+            debug!("Decrypted size: {:?}", (plaintext_bytes.len() as u16));
+            debug!("Encrypted size: {:?}", (result.len() as u16));
+
+            // Update sequence counter
+            handshake_keys.client_seq_num += 1;
+
+            // Create TLSRecord for Encrypted message
+            let request_record = TLSRecord {
+                record_type: ContentType::ApplicationData,
+                legacy_record_version: TLS_VERSION_COMPATIBILITY,
+                length: u16::try_from(result.len()).expect("Encrypted message too long"),
+                fragment: result.clone(),
+            };
+
+            // Send the constructed request to the server
+            match stream.write_all(
+                &request_record
+                    .as_bytes()
+                    .expect("Failed to serialize TLS Record into bytes"),
+            ) {
+                Ok(()) => {
+                    info!("The Application Data request has been sent...");
+                }
+                Err(e) => {
+                    error!("Failed to send the request: {e}");
+                }
+            };
+
+            //////////////////////////////////////////////
+            // This reads response to  Application Data //
+            //////////////////////////////////////////////
+
+            // Read all the response data into a `VecDeque` buffer
+            let buffer = process_tcp_stream(&mut stream).unwrap_or_else(|e| {
+                error!("Failed to read the TCP response: {e}");
+                std::process::exit(1)
+            });
+
+            let response_records = tls13tutorial::get_records(buffer).unwrap_or_else(|e| {
+                error!("Failed to process the records: {e}");
+                std::process::exit(1)
+            });
+
+            for record in response_records {
+                // No need to match, everything should be ApplicationData
+                // Create additional associated data for decryption
+                let mut aad = Vec::new();
+                aad.push(record.record_type as u8);
+                debug!("Aad type: {}", to_hex(&aad));
+                aad.extend_from_slice(&record.legacy_record_version.to_be_bytes());
+                debug!("Aad version: {}", to_hex(&aad));
+                aad.extend_from_slice(&record.length.to_be_bytes());
+                debug!("Aad: {}", to_hex(&aad));
+                let payload = Payload {
+                    msg: &record.fragment,
+                    aad: &aad,
+                };
+
+                // NOTE: Stupid alert
+                let mut iv = vec![0u8; 4];
+                iv.splice(4.., handshake_keys.server_seq_num.to_be_bytes().to_vec());
+                debug!("IV: {}", to_hex(&iv));
+
+                // XOR iv and server_ap_iv to create decrytpion nonce
+                let nonce: Vec<u8> = iv
+                    .iter()
+                    .zip(handshake_keys.server_ap_iv.iter())
+                    .map(|(&x1, &x2)| x1 ^ x2)
+                    .collect();
+                debug!("Nonce: {}", to_hex(&nonce));
+
+                // Decryption cipher
+                let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.server_ap_key);
+                debug!("{:?}", cipher.is_ok());
+
+                // Decrypt record
+                let result = cipher
+                    .unwrap()
+                    .decrypt(Nonce::from_slice(&nonce), payload)
+                    .unwrap();
+                debug!("Raw decrypted data: {:?}", result);
+
+                // Update sequence counter
+                handshake_keys.server_seq_num += 1;
+
+                let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
+                    .expect("Failed to parse TLSInnerPlaintext");
+                debug!("TLSInnerPlaintext content data: {:?}", plaintext.content);
+                debug!(
+                    "TLSInnerPlaintext content length: {:?}",
+                    plaintext.content.len()
+                );
+
+                // TLSInnerPlaintext can be encoded ApplicationData or Alert message
+                match plaintext.content_type {
+                    ContentType::Alert => match Alert::from_bytes(&mut plaintext.content.into()) {
+                        Ok(alert) => {
+                            warn!("Alert received: {alert}");
+                            // TODO: Check if CloseNotify and send it back and close
+                        }
+                        Err(e) => {
+                            error!("Failed to parse the alert: {e}");
+                        }
+                    },
+                    _ => {
+                        // TODO: later
+                        debug!("Handle other than Alert records");
+                        debug!("Received record: {:?}", plaintext.content_type);
+                        debug!(
+                            "Record content: {:?}",
+                            str::from_utf8(&plaintext.content).unwrap()
+                        );
+                    }
+                }
+            }
+
+            //thread::sleep(Duration::from_millis(1000)); // don't eat all CPU!
         }
         Err(e) => {
             error!("Failed to connect: {e}");
