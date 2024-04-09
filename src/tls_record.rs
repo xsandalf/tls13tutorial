@@ -40,6 +40,7 @@ impl ByteSerializable for TLSRecord {
         bytes.extend_from_slice(&self.fragment);
         Some(bytes)
     }
+
     /// Parse the bytes into a `TLSPlaintext` struct
     /// Returns `Result` object with the parsed `TLSPlaintext` object and the remaining bytes
     /// `Box` structure is used to wrap the data of the struct into a heap-allocated memory
@@ -53,6 +54,7 @@ impl ByteSerializable for TLSRecord {
                 format!("TLS Record length too short: {}", bytes.len()),
             ));
         }
+
         let record_type = match bytes.get_u8().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -65,6 +67,7 @@ impl ByteSerializable for TLSRecord {
             23 => ContentType::ApplicationData,
             _ => ContentType::Invalid,
         };
+
         let legacy_record_version = bytes.get_u16().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -82,15 +85,19 @@ impl ByteSerializable for TLSRecord {
                 "Insufficient bytes for TLS Record length",
             )
         })?;
+
         debug!("TLS Record defined length: {}", length);
+
         if length > RECORD_FRAGMENT_MAX_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Invalid TLS Record: record overflow",
             ));
         }
+
         if bytes.len() > length as usize {
             let fragment = bytes.get_bytes(length as usize);
+
             Ok(Box::from(TLSRecord {
                 record_type,
                 legacy_record_version,
@@ -104,6 +111,7 @@ impl ByteSerializable for TLSRecord {
                     "TLS Record: length and fragment size mismatch",
                 ));
             }
+
             Ok(Box::from(TLSRecord {
                 record_type,
                 legacy_record_version,
@@ -121,17 +129,17 @@ pub struct TLSInnerPlaintext {
     pub content_type: ContentType, // Inner content type of the decrypted content
     pub zeros: Vec<u8>,
 }
+
 impl ByteSerializable for TLSInnerPlaintext {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // TODO: Untested. todo!("Implement TLSInnerPlaintext as_bytes");
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.content);
         bytes.push(self.content_type as u8);
         bytes.extend_from_slice(&self.zeros);
         Some(bytes)
     }
+
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // DONE, tested. todo!("Implement TLSInnerPlaintext from_bytes")
         let length = bytes.len();
         debug!("TLSInnerPlaintext defined length: {}", length);
 
@@ -154,6 +162,7 @@ impl ByteSerializable for TLSInnerPlaintext {
             }
             padding_size += 1;
         }
+
         debug!("TLSInnerPlaintext padding size: {}", padding_size);
 
         // Minus 1 byte for content_type
@@ -170,10 +179,12 @@ impl ByteSerializable for TLSInnerPlaintext {
             23 => ContentType::ApplicationData,
             _ => ContentType::Invalid,
         };
+
         debug!("TLSInnerPlaintext content type: {}", content_type as u8);
 
         // Remove zero padding from buffer
         let zeros = bytes.get_bytes(padding_size);
+
         Ok(Box::new(TLSInnerPlaintext {
             content,
             content_type,
