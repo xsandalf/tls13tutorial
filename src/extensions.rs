@@ -1,6 +1,7 @@
 //! # TLS Extensions and their encoding/decoding
 //!
 //! Includes `ByteSerializable` trait for converting structures into bytes and constructing again.
+use crate::display::to_hex;
 use crate::handshake::ProtocolVersion;
 use crate::parser::ByteParser;
 use ::log::{debug, warn};
@@ -22,7 +23,7 @@ pub enum ExtensionOrigin {
 }
 
 /// `Extension` is wrapper for any TLS extension
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Extension {
     pub origin: ExtensionOrigin,
     pub extension_type: ExtensionType, // Defined maximum value can be 65535, takes 2 bytes to present
@@ -59,7 +60,12 @@ impl Extension {
 
         debug!("Extension data length: {}", ext_data_len);
 
-        let ext_data = bytes.get_bytes(ext_data_len as usize);
+        let ext_data = bytes.get_bytes(ext_data_len as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid Extensions length: buffer overflow",
+            )
+        })?;
         let mut ext_bytes = ByteParser::from(ext_data);
 
         let extension_data = match ext_type {
@@ -94,7 +100,7 @@ impl Extension {
 }
 
 /// `ExtensionType` where maximum value can be 2^16-1 (2 bytes to present)
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ExtensionType {
     ServerName = 0,
     MaxFragmentLength = 1,
@@ -161,7 +167,7 @@ impl From<u16> for ExtensionType {
 /// then the "signature_algorithms" extension also applies to signatures appearing in certificates.
 /// All implementations MUST send and use these extensions when offering applicable features:
 /// "pre_shared_key" is REQUIRED for PSK key agreement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExtensionData {
     ServerName(ServerNameList),
     SupportedGroups(NamedGroupList),
@@ -204,14 +210,16 @@ impl ByteSerializable for ExtensionData {
 }
 
 /// Kinds of `ProtocolVersion` - client offers multiple versions where a server selects one.
-#[derive(Debug, Clone)]
+//#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionKind {
     Suggested(Vec<ProtocolVersion>), // length of the data can be 2..254 on client, 1 byte to present
     Selected(ProtocolVersion),
 }
 
 /// # Supported versions extension
-#[derive(Debug, Clone)]
+//#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupportedVersions {
     pub version: VersionKind,
 }
@@ -251,6 +259,7 @@ impl ByteSerializable for SupportedVersions {
         // NOTE: What if len() is 0
         if bytes.len() > 2 {
             // 1 byte length determinant for `versions`
+            // NOTE: This error is never reached
             let length = bytes.get_u8().ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -303,7 +312,7 @@ impl ByteSerializable for SupportedVersions {
 /// defined in RFC5890.  DNS hostnames are case-insensitive.  The
 /// algorithm to compare hostnames is described in RFC5890, Section
 /// 2.3.2.4.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServerName {
     pub name_type: NameType,
     pub host_name: HostName,
@@ -317,7 +326,7 @@ impl std::fmt::Display for ServerName {
 }
 
 /// `NameType` where maximum value be `u8::MAX` (1 byte)
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum NameType {
     HostName = 0,
 }
@@ -326,7 +335,7 @@ pub enum NameType {
 type HostName = Vec<u8>;
 
 /// `ServerNameList` is a list of `ServerName` structures, where maximum length be `u16::MAX` (2 bytes)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServerNameList {
     pub server_name_list: Vec<ServerName>,
 }
@@ -422,15 +431,22 @@ impl ByteSerializable for ServerNameList {
                 )
             })?;
 
+            let hostname = bytes.get_bytes(length as usize).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ServerNameList host_name length: buffer overflow",
+                )
+            })?;
+
             // NOTE: Should this have error check, or should that be in the get_bytes() method
             // TODO: Don't autoassume name_type == 0, test it
             server_names.push(ServerName {
                 name_type: NameType::HostName,
-                host_name: bytes.get_bytes(length as usize),
+                host_name: hostname,
             });
 
-            // 1 byte for name_type + length of host_name
-            i += 1 + length
+            // 1 byte for name_type + 2 bytes for host_name length determinant + length of host_name
+            i += 1 + 2 + length
         }
 
         Ok(Box::new(ServerNameList {
@@ -443,7 +459,7 @@ impl ByteSerializable for ServerNameList {
 /// Our client primarily supports signature scheme Ed25519
 /// Value takes 2 bytes to represent.
 /// See more [here.](https://datatracker.ietf.org/doc/html/rfc8446#appendix-B.3.1.3)
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum SignatureScheme {
     /* RSASSA-PKCS1-v1_5 algorithms */
     RsaPkcs1Sha256 = 0x0401,
@@ -509,7 +525,7 @@ impl ByteSerializable for SignatureScheme {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SupportedSignatureAlgorithms {
     pub supported_signature_algorithms: Vec<SignatureScheme>, // length of the data can be 2..2^16-2
 }
@@ -557,7 +573,7 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
 /// Parameters for ECDH goes to opaque `key_exchange` field of a `KeyShareEntry` in a `KeyShare` structure.
 /// Max size is (0xFFFF), takes 2 bytes to present
 /// See more in [here.](https://datatracker.ietf.org/doc/html/rfc8446#appendix-B.3.1.4)
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum NamedGroup {
     /* Elliptic Curve Groups (ECDHE) */
     Secp256r1 = 0x0017, // NOTE: We only support this
@@ -606,7 +622,7 @@ impl ByteSerializable for NamedGroup {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NamedGroupList {
     pub named_group_list: Vec<NamedGroup>, // (2 bytes to present)
 }
@@ -658,7 +674,7 @@ impl ByteSerializable for NamedGroupList {
 }
 
 /// ## `KeyShare` Extension
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KeyShareEntry {
     pub group: NamedGroup,
     pub key_exchange: Vec<u8>, // (2 bytes to present the length)
@@ -691,11 +707,18 @@ impl ByteSerializable for KeyShareEntry {
             )
         })?;
 
+        let key_exchange = bytes.get_bytes(length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid KeyShareEntry key_exchange length: buffer overflow",
+            )
+        })?;
+
         // NOTE: Should this have error check, or should that be in the get_bytes() method
         // NOTE: Length should be checked
         Ok(Box::new(KeyShareEntry {
             group: named_group,
-            key_exchange: bytes.get_bytes(length as usize),
+            key_exchange,
         }))
     }
 }
@@ -703,7 +726,7 @@ impl ByteSerializable for KeyShareEntry {
 /// There are three different structures for `KeyShare` extension
 /// One for `ClientHello`, one for `HelloRetryRequest` and one for `ServerHello`
 /// The order in the vector `KeyShareEntry` should be same as in `SupportedGroups` extension
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KeyShareClientHello {
     pub client_shares: Vec<KeyShareEntry>, // (2 bytes to present the length)
 }
@@ -761,7 +784,7 @@ impl ByteSerializable for KeyShareClientHello {
 }
 /// `key_share` extension data structure in `ServerHello`
 /// Contains only single `KeyShareEntry` when compared to `KeyShareClientHello`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KeyShareServerHello {
     pub server_share: KeyShareEntry,
 }
@@ -781,7 +804,7 @@ impl ByteSerializable for KeyShareServerHello {
 /// Modes for pre-shared key (PSK) key exchange
 /// Client-only
 /// 1 byte to present
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum PskKeyExchangeMode {
     PskKe = 0,
     PskDheKe = 1,
@@ -790,7 +813,7 @@ pub enum PskKeyExchangeMode {
 /// ## `psk_key_exchange_modes` extension
 /// A client MUST provide a `PskKeyExchangeModes` extension if it
 ///  offers a `pre_shared_key` extension.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PskKeyExchangeModes {
     pub ke_modes: Vec<PskKeyExchangeMode>, // (1 byte to present the length)
 }
@@ -849,7 +872,7 @@ impl ByteSerializable for PskKeyExchangeModes {
 }
 
 /// ## Cookie extension
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Cookie {
     cookie: Vec<u8>, // (2 bytes to present the length)
 }
@@ -876,21 +899,365 @@ impl ByteSerializable for Cookie {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid cookie length")
         })?;
 
+        let cookie = bytes.get_bytes(length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid Cookie length: buffer overflow",
+            )
+        })?;
+
         // NOTE: Should this have error check, or should that be in the get_bytes() method
         // NOTE: Length should be checked
-        Ok(Box::new(Cookie {
-            cookie: bytes.get_bytes(length as usize),
-        }))
+        Ok(Box::new(Cookie { cookie }))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
+    use crate::round_trip;
     use pretty_assertions::assert_eq;
+    use rasn_pkix::Name;
+
+    #[test]
+    fn test_supported_versions() {
+        // Positive
+        round_trip!(
+            SupportedVersions,
+            SupportedVersions {
+                version: VersionKind::Selected(0x1a1b)
+            },
+            &[0x1a, 0x1b]
+        );
+
+        round_trip!(
+            SupportedVersions,
+            SupportedVersions {
+                version: VersionKind::Suggested(vec![0x74B1, 0x9AF0])
+            },
+            &[0x04, 0x74, 0xB1, 0x9A, 0xF0]
+        );
+
+        // Negative
+        // VersionKind::Selected
+        let bytes = ByteParser::from(vec![]);
+        assert!(SupportedVersions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid selected version"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00]);
+        assert!(SupportedVersions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid selected version"
+        ));
+
+        // VersionKind::Suggested
+        let bytes = ByteParser::from(vec![0x04, 0x02, 0x03, 0x01]);
+        assert!(SupportedVersions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid suggested version"
+        ));
+    }
+
+    #[test]
+    fn test_extension_supported_versions() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Server,
+            extension_type: ExtensionType::SupportedVersions,
+            extension_data: ExtensionData::SupportedVersions(SupportedVersions {
+                version: VersionKind::Selected(0x22FF),
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(bytes, vec![0x00, 0x2B, 0x00, 0x02, 0x22, 0xFF]);
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Server).unwrap();
+        assert_eq!(*ext, extension);
+
+        let extension = Extension {
+            origin: ExtensionOrigin::Client,
+            extension_type: ExtensionType::SupportedVersions,
+            extension_data: ExtensionData::SupportedVersions(SupportedVersions {
+                version: VersionKind::Suggested(vec![0x22FF, 0x1D09, 0x40A1]),
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x00, 0x2B, 0x00, 0x07, 0x06, 0x22, 0xFF, 0x1D, 0x09, 0x40, 0xA1]
+        );
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Client).unwrap();
+        assert_eq!(*ext, extension);
+    }
 
     #[test]
     fn test_server_name_list() {
+        // Positive
+        round_trip!(
+            ServerNameList,
+            ServerNameList {
+                server_name_list: vec![ServerName {
+                    name_type: NameType::HostName,
+                    host_name: "example.domain.org".as_bytes().to_vec(),
+                }],
+            },
+            &[
+                0x00, 0x15, 0x00, 0x00, 0x12, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x64,
+                0x6F, 0x6D, 0x61, 0x69, 0x6E, 0x2E, 0x6F, 0x72, 0x67
+            ]
+        );
+
+        round_trip!(
+            ServerNameList,
+            ServerNameList {
+                server_name_list: Vec::new(),
+            },
+            &[]
+        );
+
+        //Negative
+        let bytes = ByteParser::from(vec![0x01]);
+        assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid server name list length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid server name name type"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00, 0x00]);
+        assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid server name host name length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00, 0x00, 0x01]);
+        assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerNameList host_name length: buffer overflow"
+        ));
+    }
+
+    #[test]
+    fn test_extension_server_name_list() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Client,
+            extension_type: ExtensionType::ServerName,
+            extension_data: ExtensionData::ServerName(ServerNameList {
+                server_name_list: vec![ServerName {
+                    name_type: NameType::HostName,
+                    host_name: "another.domain.net".as_bytes().to_vec(),
+                }],
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x00, 0x00, 0x00, 0x17, 0x00, 0x15, 0x00, 0x00, 0x12, 0x61, 0x6E, 0x6F, 0x74, 0x68,
+                0x65, 0x72, 0x2E, 0x64, 0x6F, 0x6D, 0x61, 0x69, 0x6E, 0x2E, 0x6E, 0x65, 0x74
+            ]
+        );
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Client).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn test_signature_scheme() {
+        // Positive
+        round_trip!(
+            SignatureScheme,
+            SignatureScheme::EcdsaSecp256r1Sha256,
+            &[0x04, 0x03]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(SignatureScheme::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SignatureScheme::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SignatureScheme::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Insufficient data when parsing input bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00]);
+        assert!(SignatureScheme::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SignatureScheme::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SignatureScheme::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid SignatureScheme"
+        ));
+    }
+
+    #[test]
+    fn test_supported_signature_algorithms() {
+        // Positive
+        round_trip!(
+            SupportedSignatureAlgorithms,
+            SupportedSignatureAlgorithms {
+                supported_signature_algorithms: vec![
+                    SignatureScheme::EcdsaSecp384r1Sha384,
+                    SignatureScheme::EcdsaSecp521r1Sha512
+                ]
+            },
+            &[0x00, 0x04, 0x05, 0x03, 0x06, 0x03]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![0x00]);
+        assert!(SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid supported signature algorithms length"
+        ));
+    }
+
+    #[test]
+    fn test_extension_supported_signature_algorithms() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Client,
+            extension_type: ExtensionType::SignatureAlgorithms,
+            extension_data: ExtensionData::SignatureAlgorithms(SupportedSignatureAlgorithms {
+                supported_signature_algorithms: vec![
+                    SignatureScheme::Ed25519,
+                    SignatureScheme::EcdsaSha1,
+                ],
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x00, 0x0D, 0x00, 0x06, 0x00, 0x04, 0x08, 0x07, 0x02, 0x03]
+        );
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Client).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn test_named_group() {
+        // Positive
+        round_trip!(NamedGroup, NamedGroup::X25519, &[0x00, 0x1D]);
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(NamedGroup::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroup::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroup::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Insufficient data when parsing input bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00]);
+        assert!(NamedGroup::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroup::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroup::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid NamedGroup"
+        ));
+    }
+
+    #[test]
+    fn test_named_group_list() {
+        // Positive
+        round_trip!(
+            NamedGroupList,
+            NamedGroupList {
+                named_group_list: vec![NamedGroup::X448, NamedGroup::Ffdhe4096]
+            },
+            &[0x00, 0x04, 0x00, 0x1E, 0x01, 0x02]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![0x00]);
+        assert!(NamedGroupList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid named group list length"
+        ));
+    }
+
+    #[test]
+    fn test_extension_named_group_list() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Client,
+            extension_type: ExtensionType::SupportedGroups,
+            extension_data: ExtensionData::SupportedGroups(NamedGroupList {
+                named_group_list: vec![NamedGroup::Ffdhe2048],
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(bytes, vec![0x00, 0x0A, 0x00, 0x04, 0x00, 0x02, 0x01, 0x00]);
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Client).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn old_test_server_name_list() {
         let server_name_list = ServerNameList {
             server_name_list: vec![ServerName {
                 name_type: NameType::HostName,
@@ -907,8 +1274,9 @@ mod tests {
             ]
         );
     }
+
     #[test]
-    fn test_extension_server_name_list() {
+    fn old_test_extension_server_name_list() {
         let extension = Extension {
             origin: ExtensionOrigin::Client,
             extension_type: ExtensionType::ServerName,
