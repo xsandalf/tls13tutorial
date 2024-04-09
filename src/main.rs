@@ -356,13 +356,51 @@ fn decrypt_record(
 
     // Decryption cipher
     let cipher = ChaCha20Poly1305::new_from_slice(key);
-    debug!("{:?}", cipher.is_ok());
 
     // Decrypt record
     let result = cipher.unwrap().decrypt(&nonce, payload).unwrap();
 
     // Update sequence counter
     handshake_keys.server_seq_num += 1;
+
+    Ok(result)
+}
+
+// Encrypt TSLInnerPlaintext record bytes with ChaCha20Poly1305
+fn encrypt_record(
+    handshake_keys: &mut HandshakeKeys,
+    record_bytes: &Vec<u8>,
+    is_hs: bool,
+) -> io::Result<Vec<u8>> {
+    // Create additional associated data for encryption
+    let aad = create_encryption_aad(&record_bytes, 16).unwrap();
+
+    let payload = Payload {
+        msg: &record_bytes,
+        aad: &aad,
+    };
+
+    let iv: &Vec<u8>;
+    let key: &Vec<u8>;
+
+    if is_hs {
+        iv = &handshake_keys.client_hs_iv;
+        key = &handshake_keys.client_hs_key;
+    } else {
+        iv = &handshake_keys.client_ap_iv;
+        key = &handshake_keys.client_ap_key;
+    }
+
+    let nonce = create_nonce(handshake_keys.client_seq_num, iv).unwrap();
+
+    // Encryption cipher
+    let cipher = ChaCha20Poly1305::new_from_slice(key);
+
+    // Encrypt record
+    let result = cipher.unwrap().encrypt(&nonce, payload).unwrap();
+
+    // Update sequence counter
+    handshake_keys.client_seq_num += 1;
 
     Ok(result)
 }
@@ -842,27 +880,7 @@ fn main() {
                 .expect("Failed to serialize TLSInnerPlaintext into bytes");
 
             // Encrypt TLSInnerPlaintext
-            // Create additional associated data for encryption
-            let aad = create_encryption_aad(&plaintext_bytes, 16).unwrap();
-
-            let payload = Payload {
-                msg: &plaintext_bytes,
-                aad: &aad,
-            };
-
-            let nonce =
-                create_nonce(handshake_keys.client_seq_num, &handshake_keys.client_hs_iv).unwrap();
-
-            // Encryption cipher
-            let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.client_hs_key);
-            debug!("{:?}", cipher.is_ok());
-
-            // Encrypt record
-            let result = cipher.unwrap().encrypt(&nonce, payload).unwrap();
-            debug!("Raw encrypted data: {:?}", result);
-
-            // Update sequence counter
-            handshake_keys.client_seq_num += 1;
+            let result = encrypt_record(&mut handshake_keys, &plaintext_bytes, true).unwrap();
 
             // Create TLSRecord for Encrypted message
             let request_record = TLSRecord {
@@ -901,26 +919,7 @@ fn main() {
                 .expect("Failed to serialize TLSInnerPlaintext into bytes");
 
             // Encrypt TLSInnerPlaintext
-            // Create additional associated data for encryption
-            let aad = create_encryption_aad(&plaintext_bytes, 16).unwrap();
-
-            let payload = Payload {
-                msg: &plaintext_bytes,
-                aad: &aad,
-            };
-
-            let nonce =
-                create_nonce(handshake_keys.client_seq_num, &handshake_keys.client_ap_iv).unwrap();
-
-            // Encryption cipher
-            let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.client_ap_key);
-            debug!("{:?}", cipher.is_ok());
-
-            // Encrypt record
-            let result = cipher.unwrap().encrypt(&nonce, payload).unwrap();
-
-            // Update sequence counter
-            handshake_keys.client_seq_num += 1;
+            let result = encrypt_record(&mut handshake_keys, &plaintext_bytes, false).unwrap();
 
             // Create TLSRecord for Encrypted message
             let request_record = TLSRecord {
