@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 
 use rasn::types::UtcTime;
-use rasn_pkix::Time;
+use rasn_pkix::{Name, Time, Validity};
 
 use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
 use p256::EncodedPoint;
@@ -405,6 +405,98 @@ fn encrypt_record(
     Ok(result)
 }
 
+// Check certificate expiration
+fn check_certificate_expiration(validity: Validity) -> bool {
+    // NOTE: Didn't bother to ask permission to use chrono
+    let current_time = Time::Utc(UtcTime::from_timestamp_nanos(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64,
+    ));
+
+    let range = validity.not_before..validity.not_after;
+
+    // Check validity
+    if !range.contains(&current_time) {
+        // TODO: Terminate with alert "certificate_expired"
+        debug!("Sanity check: Certificate expired");
+        debug!("{:?}", range);
+        debug!("{:?}", current_time);
+        return false;
+    }
+
+    true
+}
+
+// Check certificate CN(Common Name) matches hostname
+fn check_certificate_cn(subject: Name, hostname: &str) -> bool {
+    let mut correct_cn = false;
+    // NOTE: No easy way to access, that I know of, so we have to be "hacky"
+    // Subject consist of RelativeDistinguishName Type and Value pairs
+    // Loop through RDNs and access type-value pairs with pop_first()
+    // We know that values are text so turn the value into a string
+    // TODO: Figure out ObjectIdentifier to access value directly
+    match subject {
+        rasn_pkix::Name::RdnSequence(rdn_sequence) => {
+            'outer: for mut rdn in rdn_sequence {
+                while !rdn.is_empty() {
+                    let atav = rdn.pop_first().unwrap();
+                    let value_bytes = atav.value.into_bytes();
+                    // Ignore first 2 bytes, they don't contain anything valuable
+                    let value_str =
+                        str::from_utf8(&&value_bytes[2..]).expect("Failed to parse value into str");
+                    if value_str == hostname {
+                        correct_cn = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    // If hostname was not found from subject, we cannot verify that Certificate belongs to host
+    if !correct_cn {
+        // TODO: Terminate with alert "certificate_unknown"
+        debug!("Sanity check: Cannot verify Certificate belongs to the host");
+        return false;
+    }
+
+    true
+}
+
+// Check certificate is valid (CN matching, Expiration check)
+fn validate_certificate(certificate_data: &[u8], hostname: &str) {
+    // TODO: Terminate if empty certificate with "decode_error"
+    // Parse certificate
+    let certificate = rasn::der::decode::<rasn_pkix::Certificate>(certificate_data)
+        .expect("Failed to parse Certificate");
+
+    // Get validity data
+    let validity = certificate.tbs_certificate.validity;
+
+    let not_expired = check_certificate_expiration(validity);
+
+    if !not_expired {
+        // TODO: Terminate with alert "certificate_expired"
+    }
+
+    // Need to get CN from subject
+    let subject = certificate.tbs_certificate.subject;
+
+    let correct_cn = check_certificate_cn(subject, hostname);
+
+    if !correct_cn {
+        // TODO: Terminate with alert "certificate_unknown"
+    }
+
+    // TODO: Check Certificate chain
+    // NOTE: Too difficult to implement currently
+
+    // TODO: Check if Certificate is revoked
+    // NOTE: Too difficult to implemenet currently
+}
+
 // Calculate verify_data for client Handshake Finished message
 fn calculate_verify_data(
     handshake_keys: &mut HandshakeKeys,
@@ -657,74 +749,12 @@ fn main() {
                                                 cert_copy.certificate_list.first().unwrap();
                                             cert_data
                                                 .extend_from_slice(&cert_entry.certificate_data);
-                                            let enc_cert = &cert_entry.certificate_data;
-                                            let cert = rasn::der::decode::<rasn_pkix::Certificate>(
-                                                enc_cert,
-                                            )
-                                            .expect("Failed to parse Certificate");
 
-                                            let validity = cert.tbs_certificate.validity;
-                                            // NOTE: Didn't bother to ask permission to use chrono
-                                            let current_time =
-                                                Time::Utc(UtcTime::from_timestamp_nanos(
-                                                    SystemTime::now()
-                                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                                        .unwrap()
-                                                        .as_nanos()
-                                                        as i64,
-                                                ));
-                                            let range = validity.not_before..validity.not_after;
-
-                                            // Check validity
-                                            if !range.contains(&current_time) {
-                                                // TODO: Terminate with alert "certificate_expired"
-                                                debug!("Sanity check: Certificate expired");
-                                                debug!("{:?}", range);
-                                                debug!("{:?}", current_time);
-                                            }
-
-                                            // Need to get CN from subject
-                                            let subject = cert.tbs_certificate.subject;
-                                            let mut correct_cn = false;
-                                            // NOTE: No easy way to access, that I know of, so we have to be "hacky"
-                                            // Subject consist of RelativeDistinguishName Type and Value pairs
-                                            // Loop through RDNs and access type-value pairs with pop_first()
-                                            // We know that values are text so turn the value into a string
-                                            // TODO: Figure out ObjectIdentifier to access value directly
-                                            match subject {
-                                                rasn_pkix::Name::RdnSequence(rdn_sequence) => {
-                                                    'outer: for mut rdn in rdn_sequence {
-                                                        while !rdn.is_empty() {
-                                                            let atav = rdn.pop_first().unwrap();
-                                                            let value_bytes =
-                                                                atav.value.into_bytes();
-                                                            // Ignore first 2 bytes, they don't contain anything valuable
-                                                            let value_str = str::from_utf8(
-                                                                &&value_bytes[2..],
-                                                            )
-                                                            .expect(
-                                                                "Failed to parse value into str",
-                                                            );
-                                                            if value_str == hostname {
-                                                                correct_cn = true;
-                                                                break 'outer;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // If hostname was not found from subject, we cannot verify that Certificate belongs to host
-                                            if !correct_cn {
-                                                // TODO: Terminate with alert "certificate_unknown"
-                                                debug!("Sanity check: Cannot verify Certificate belongs to the host");
-                                            }
-
-                                            // TODO: Check Certificate chain
-                                            // NOTE: Too difficult to implement currently
-
-                                            // TODO: Check if Certificate is revoked
-                                            // NOTE: Too difficult to implemenet currently
+                                            // Validate certificate
+                                            validate_certificate(
+                                                &cert_entry.certificate_data,
+                                                hostname,
+                                            );
                                         }
                                         HandshakeMessage::CertificateVerify(certificate_verify) => {
                                             debug!("Verify this cert data: {:?}", cert_data);
