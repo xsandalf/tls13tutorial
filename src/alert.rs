@@ -221,11 +221,31 @@ mod tests {
             Alert::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid alert level"
         ));
+
         // Invalid alert description
-        let mut bytes = ByteParser::from(vec![1, 1]);
-        assert!(Alert::from_bytes(&mut bytes,).is_err());
+        let bytes = ByteParser::from(vec![1, 1]);
+        assert!(Alert::from_bytes(&mut bytes.clone(),).is_err());
+        // More precise tests for specific error just to demonstrate the error handling
+        assert!(matches!(
+            Alert::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Alert::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid alert description"
+        ));
+
         // Too long alert data
         let mut bytes = ByteParser::from(vec![2, 50, 1]);
         assert!(Alert::from_bytes(&mut bytes,).is_err());
+        // More precise tests for specific error just to demonstrate the error handling
+        assert!(matches!(
+            Alert::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Alert::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid alert length"
+        ));
     }
 }
