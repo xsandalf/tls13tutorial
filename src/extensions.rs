@@ -47,6 +47,7 @@ impl Extension {
         let ext_type = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid extension type")
         })?;
+
         debug!("ExtensionType: {:?}", ext_type);
 
         let ext_data_len = bytes.get_u16().ok_or_else(|| {
@@ -55,13 +56,13 @@ impl Extension {
                 "Invalid extension data length",
             )
         })?;
+
         debug!("Extension data length: {}", ext_data_len);
+
         let ext_data = bytes.get_bytes(ext_data_len as usize);
         let mut ext_bytes = ByteParser::from(ext_data);
-        debug!("Extension data: {:?}", ext_bytes);
+
         let extension_data = match ext_type {
-            // TODO: needs to be tested
-            // TODO Implement the rest of the extension types
             0 => ExtensionData::ServerName(*ServerNameList::from_bytes(&mut ext_bytes)?),
             10 => ExtensionData::SupportedGroups(*NamedGroupList::from_bytes(&mut ext_bytes)?),
             13 => ExtensionData::SignatureAlgorithms(*SupportedSignatureAlgorithms::from_bytes(
@@ -84,12 +85,6 @@ impl Extension {
             }
         };
 
-        // Use placeholder `Unserialized` for now, not all extension data types are implemented
-        //Ok(Box::new(Extension {
-        //    origin,
-        //    extension_type: ext_type.into(),
-        //    extension_data: ExtensionData::Unserialized(ext_bytes.drain()),
-        //}))
         Ok(Box::new(Extension {
             origin,
             extension_type: ext_type.into(),
@@ -168,15 +163,15 @@ impl From<u16> for ExtensionType {
 /// "pre_shared_key" is REQUIRED for PSK key agreement.
 #[derive(Debug, Clone)]
 pub enum ExtensionData {
-    ServerName(ServerNameList),      // Decoder added, untested
-    SupportedGroups(NamedGroupList), // Decoder added, untested
-    SignatureAlgorithms(SupportedSignatureAlgorithms), // Decoder added, untested. SignatureScheme decoder added, untested
-    SupportedVersions(SupportedVersions),              // Decoder added, untested
-    KeyShareClientHello(KeyShareClientHello), // Decoder added, untested. KeyShare decoder added, untested
+    ServerName(ServerNameList),
+    SupportedGroups(NamedGroupList),
+    SignatureAlgorithms(SupportedSignatureAlgorithms),
+    SupportedVersions(SupportedVersions),
+    KeyShareClientHello(KeyShareClientHello),
     KeyShareServerHello(KeyShareServerHello),
-    PskKeyExchangeModes(PskKeyExchangeModes), // Decoder added, untested
-    Cookie(Cookie),                           // Encoder added, untested. Decoder added, untested
-    Unserialized(Vec<u8>),                    // Placeholder for unimplemented extension data
+    PskKeyExchangeModes(PskKeyExchangeModes),
+    Cookie(Cookie),
+    Unserialized(Vec<u8>),
 }
 
 impl ByteSerializable for ExtensionData {
@@ -224,11 +219,13 @@ pub struct SupportedVersions {
 impl ByteSerializable for SupportedVersions {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
+
         match &self.version {
             VersionKind::Suggested(versions) => {
                 for version in versions {
                     bytes.extend_from_slice(&version.to_be_bytes());
                 }
+
                 // 1 byte length determinant for `versions`
                 bytes.splice(
                     0..0,
@@ -243,6 +240,7 @@ impl ByteSerializable for SupportedVersions {
                 bytes.extend_from_slice(&version.to_be_bytes());
             }
         }
+
         Some(bytes)
     }
 
@@ -252,7 +250,6 @@ impl ByteSerializable for SupportedVersions {
         // TODO: Split same way as KeyShareClientHello and KeyShareServerHello
         // NOTE: What if len() is 0
         if bytes.len() > 2 {
-            // TODO: Needs to be tested. todo!("We don't support receiving ClientHello")
             // 1 byte length determinant for `versions`
             let length = bytes.get_u8().ok_or_else(|| {
                 std::io::Error::new(
@@ -260,6 +257,7 @@ impl ByteSerializable for SupportedVersions {
                     "Invalid suggested versions length",
                 )
             })?;
+
             // Suggested versions are two bytes each
             // This means length should be % 2 == 0
             // NOTE: length should be checked
@@ -283,7 +281,6 @@ impl ByteSerializable for SupportedVersions {
                 version: VersionKind::Suggested(versions),
             }))
         } else {
-            // TODO: Needs to be tested. todo!("Serialize Selected variant");
             // NOTE: Selected version must be one in the list sent by client. Case where it isn't shoud never happen
             // but should be checked just in case. That should probably be done in main.rs or handshake.rs. Not sure yet.
             // Server returns the selected version which is represented with two bytes
@@ -379,11 +376,11 @@ impl ByteSerializable for ServerNameList {
                 .iter()
                 .copied(),
         );
+
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // DONE, tested. todo!("Implement ServerNameList from_bytes")
         // A server that receives a client hello containing the "server_name" extension
         // MAY use the information contained in the extension to guide its selection of
         // an appropriate certificate to return to the client, and/or other aspects of security policy.
@@ -431,6 +428,7 @@ impl ByteSerializable for ServerNameList {
                 name_type: NameType::HostName,
                 host_name: bytes.get_bytes(length as usize),
             });
+
             // 1 byte for name_type + length of host_name
             i += 1 + length
         }
@@ -484,20 +482,19 @@ impl ByteSerializable for SignatureScheme {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement SignatureScheme from_bytes")
         // SignatureScheme value is 2 bytes
         // NOTE: This feels very dumb, but I am not familiar with Rust
         match bytes.get_u16().ok_or_else(ByteParser::insufficient_data)? {
             0x0401 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha256)),
             0x0501 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha384)),
             0x0601 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha512)),
-            0x0403 => Ok(Box::new(SignatureScheme::EcdsaSecp256r1Sha256)),
+            0x0403 => Ok(Box::new(SignatureScheme::EcdsaSecp256r1Sha256)), // NOTE: Actually the only supported signature scheme
             0x0503 => Ok(Box::new(SignatureScheme::EcdsaSecp384r1Sha384)),
             0x0603 => Ok(Box::new(SignatureScheme::EcdsaSecp521r1Sha512)),
             0x0804 => Ok(Box::new(SignatureScheme::RsaPssRsaeSha256)),
             0x0805 => Ok(Box::new(SignatureScheme::RsaPssRsaeSha384)),
             0x0806 => Ok(Box::new(SignatureScheme::RsaPssRsaeSha512)),
-            0x0807 => Ok(Box::new(SignatureScheme::Ed25519)), // NOTE The only supported signature scheme
+            0x0807 => Ok(Box::new(SignatureScheme::Ed25519)), // NOTE The only supported signature scheme // NOTE: Actually no
             0x0808 => Ok(Box::new(SignatureScheme::Ed448)),
             0x0809 => Ok(Box::new(SignatureScheme::RsaPssPssSha256)),
             0x080a => Ok(Box::new(SignatureScheme::RsaPssPssSha384)),
@@ -520,16 +517,17 @@ pub struct SupportedSignatureAlgorithms {
 impl ByteSerializable for SupportedSignatureAlgorithms {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
+
         for signature_scheme in &self.supported_signature_algorithms {
             bytes.extend_from_slice(&signature_scheme.as_bytes()?);
         }
+
         // 2 byte length determinant for the whole `SupportedSignatureAlgorithms`
         bytes.splice(0..0, u16::try_from(bytes.len()).ok()?.to_be_bytes());
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement SupportedSignatureAlgorithms from_bytes")
         // 2 byte length determinant for the whole `SupportedSignatureAlgorithms`
         let length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
@@ -562,10 +560,10 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
 #[derive(Debug, Copy, Clone)]
 pub enum NamedGroup {
     /* Elliptic Curve Groups (ECDHE) */
-    Secp256r1 = 0x0017,
+    Secp256r1 = 0x0017, // NOTE: We only support this
     Secp384r1 = 0x0018,
     Secp521r1 = 0x0019,
-    X25519 = 0x001D, // NOTE The only supported named group
+    X25519 = 0x001D, // NOTE The only supported named group // NOTE: Not true
     X448 = 0x001E,
     /* Finite Field Groups (DHE) */
     Ffdhe2048 = 0x0100,
@@ -616,9 +614,11 @@ pub struct NamedGroupList {
 impl ByteSerializable for NamedGroupList {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
+
         for named_group in &self.named_group_list {
             bytes.extend_from_slice(&named_group.as_bytes()?);
         }
+
         // 2 byte length determinant for `named_group_list`
         bytes.splice(
             0..0,
@@ -628,11 +628,11 @@ impl ByteSerializable for NamedGroupList {
                 .iter()
                 .copied(),
         );
+
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement NamedGroupList from_bytes")
         // 2 byte length determinant for `named_group_list`
         let length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
@@ -680,7 +680,6 @@ impl ByteSerializable for KeyShareEntry {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement KeyShareEntry from_bytes")
         // NOTE: I am not sure if this is a good idea
         let named_group = *NamedGroup::from_bytes(bytes)?;
 
@@ -712,9 +711,11 @@ pub struct KeyShareClientHello {
 impl ByteSerializable for KeyShareClientHello {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
+
         for client_share in &self.client_shares {
             bytes.extend_from_slice(&client_share.as_bytes()?);
         }
+
         // 2 byte length determinant for `client_shares`
         bytes.splice(
             0..0,
@@ -724,11 +725,11 @@ impl ByteSerializable for KeyShareClientHello {
                 .iter()
                 .copied(),
         );
+
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement KeyShareClientHello from_bytes")
         // 2 byte length determinant for `client_shares`
         let length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
@@ -745,8 +746,10 @@ impl ByteSerializable for KeyShareClientHello {
         while i < length {
             // NOTE: Stupid but it is a start part 1
             let len = bytes.len();
+
             // NOTE: I am not sure if this is a good idea
             key_shares.push(*KeyShareEntry::from_bytes(bytes)?);
+
             // NOTE: Stupid but it is a start part 2
             i += (len - bytes.len()) as u16
         }
@@ -795,9 +798,11 @@ pub struct PskKeyExchangeModes {
 impl ByteSerializable for PskKeyExchangeModes {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
+
         for ke_mode in &self.ke_modes {
             bytes.push(*ke_mode as u8);
         }
+
         // 1 byte length determinant for `ke_modes`
         bytes.splice(
             0..0,
@@ -807,11 +812,11 @@ impl ByteSerializable for PskKeyExchangeModes {
                 .iter()
                 .copied(),
         );
+
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement PskKeyExchangeModes from_bytes")
         // 1 byte length determinant for `ke_modes`
         let length = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid ke modes length")
@@ -835,6 +840,7 @@ impl ByteSerializable for PskKeyExchangeModes {
                     ))
                 }
             }
+
             i += 1
         }
 
@@ -850,7 +856,7 @@ pub struct Cookie {
 
 impl ByteSerializable for Cookie {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // TODO: Needs to be tested. todo!("Implement Cookie as_bytes")
+        // TODO: Needs to be tested
         let mut bytes = Vec::new();
         // 2 byte length determinant for the `cookie`
         bytes.extend(
@@ -864,7 +870,7 @@ impl ByteSerializable for Cookie {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested. todo!("Implement Cookie from_bytes")
+        // TODO: Needs to be tested
         // 2 byte length determinant for the `key_exchange`
         let length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid cookie length")
