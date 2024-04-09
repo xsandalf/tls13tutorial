@@ -625,7 +625,6 @@ fn main() {
                         extension_type: ExtensionType::SignatureAlgorithms,
                         extension_data: ExtensionData::SignatureAlgorithms(
                             SupportedSignatureAlgorithms {
-                                //supported_signature_algorithms: vec![SignatureScheme::Ed25519], // Ed25519 is not supported
                                 supported_signature_algorithms: vec![
                                     SignatureScheme::EcdsaSecp256r1Sha256,
                                 ],
@@ -706,15 +705,9 @@ fn main() {
                         debug!("Handshake message: {:?}", &handshake);
                         if let HandshakeMessage::ServerHello(server_hello) = handshake.message {
                             info!("ServerHello message: {:?}", server_hello);
-                            //warn!("TODO: Implement the server hello message processing, and decoding of the rest of the extensions");
-                            // DONE, tested. TODO find the key share entry for X25519
-                            // DONE, tested. Calculate the shared secret (Check X25519_dalek crate)
-                            // DONE, tested. Store the shared secret in the HandshakeKeys struct, and calculate the key schedule
-                            // DONE, tested. TODO calculate transcript hash for hello messages (check illustration site and standard)
                             // TODO: Check random for HelloRetryRequest bytes
                             // TODO: Check random last 8 bytes for TLS 1.2 or 1.1 or below negoation bytes,
                             // MUST throw illegal parameter alert
-                            // NOTE: This again feels very stupid and is probably wrong
                             for extension in server_hello.extensions {
                                 match extension.extension_data {
                                     ExtensionData::KeyShareServerHello(key_share_server_hello) => {
@@ -755,7 +748,8 @@ fn main() {
                         // Read TLSInnerPlaintext and proceed with the handshake
                         info!("Application data received, size of : {:?}", record.length);
                         assert_eq!(record.fragment.len(), record.length as usize);
-                        // Done, tested. warn!("TODO: Decryption of the data and decoding of the all extensions not implemented");
+
+                        // Decrypt TLSRecord
                         let result = decrypt_record(&mut handshake_keys, &record, true).unwrap();
 
                         let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
@@ -771,9 +765,9 @@ fn main() {
                             ContentType::Handshake => {
                                 // Note TLSInnerPlaintext can contain multiple messages
                                 // plaintext.content should not have any extra bytes
-                                //debug!("Hash: {}", to_hex(&sha256.clone().finalize()));
                                 let mut content_bytes = ByteParser::from(plaintext.content);
                                 let mut cert_data = Vec::new();
+
                                 while !content_bytes.is_empty() {
                                     let handshake = *Handshake::from_bytes(&mut content_bytes)
                                         .expect("Failed to parse Handshake message");
@@ -808,12 +802,14 @@ fn main() {
                                             )
                                         }
                                         HandshakeMessage::Finished(finished) => {
+                                            // Create SHA256 HMAC
                                             let mut hmac = <HmacSha256 as Mac>::new_from_slice(
                                                 &handshake_keys.server_hs_finished_key,
                                             )
                                             .expect("Failed to initiate HMAC with key");
+
                                             let transcript_hash = sha256.clone().finalize();
-                                            //handshake_keys.key_schedule(&transcript_hash);
+
                                             hmac.update(&transcript_hash);
                                             debug!(
                                                 "HMAC: {:?}",
@@ -821,6 +817,7 @@ fn main() {
                                                     .verify_slice(&finished.verify_data)
                                                     .is_ok()
                                             );
+
                                             // TODO: Terminate with "decrypt_error" if HMAC verify is false
                                             let result = hmac.finalize().into_bytes();
                                             debug!(
@@ -1013,8 +1010,6 @@ fn main() {
                     }
                 }
             }
-
-            //thread::sleep(Duration::from_millis(1000)); // don't eat all CPU!
         }
         Err(e) => {
             error!("Failed to connect: {e}");
