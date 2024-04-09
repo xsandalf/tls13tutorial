@@ -324,7 +324,47 @@ fn calculate_verify_data(
     Ok(result.into_bytes().to_vec())
 }
 
-// Create nonce for ChaChaPolu1305 encryption/decryption
+// Decrypt TSLRecord with ChaCha20Poly1305
+fn decrypt_record(
+    handshake_keys: &mut HandshakeKeys,
+    record: &TLSRecord,
+    is_hs: bool,
+) -> io::Result<Vec<u8>> {
+    // Create additional associated data for decryption
+    let aad = create_decryption_aad(&record).unwrap();
+
+    let payload = Payload {
+        msg: &record.fragment,
+        aad: &aad,
+    };
+
+    let iv: &Vec<u8>;
+    let key: &Vec<u8>;
+
+    if is_hs {
+        iv = &handshake_keys.server_hs_iv;
+        key = &handshake_keys.server_hs_key;
+    } else {
+        iv = &handshake_keys.server_ap_iv;
+        key = &handshake_keys.server_ap_key;
+    }
+
+    let nonce = create_nonce(handshake_keys.server_seq_num, iv).unwrap();
+
+    // Decryption cipher
+    let cipher = ChaCha20Poly1305::new_from_slice(key);
+    debug!("{:?}", cipher.is_ok());
+
+    // Decrypt record
+    let result = cipher.unwrap().decrypt(&nonce, payload).unwrap();
+
+    // Update sequence counter
+    handshake_keys.server_seq_num += 1;
+
+    Ok(result)
+}
+
+// Create nonce for ChaChaPoly1305 encryption/decryption
 fn create_nonce(sequence_number: u64, iv: &Vec<u8>) -> io::Result<Nonce> {
     // NOTE: Stupid alert
     let mut init_vec = vec![0u8; 4];
@@ -546,32 +586,7 @@ fn main() {
                         info!("Application data received, size of : {:?}", record.length);
                         assert_eq!(record.fragment.len(), record.length as usize);
                         // Done, tested. warn!("TODO: Decryption of the data and decoding of the all extensions not implemented");
-
-                        // Create additional associated data for decryption
-                        let aad = create_decryption_aad(&record).unwrap();
-
-                        let payload = Payload {
-                            msg: &record.fragment,
-                            aad: &aad,
-                        };
-
-                        let nonce = create_nonce(
-                            handshake_keys.server_seq_num,
-                            &handshake_keys.server_hs_iv,
-                        )
-                        .unwrap();
-
-                        // Decryption cipher
-                        let cipher =
-                            ChaCha20Poly1305::new_from_slice(&handshake_keys.server_hs_key);
-                        debug!("{:?}", cipher.is_ok());
-
-                        // Decrypt record
-                        let result = cipher.unwrap().decrypt(&nonce, payload).unwrap();
-                        debug!("Raw decrypted data: {:?}", result);
-
-                        // Update sequence counter
-                        handshake_keys.server_seq_num += 1;
+                        let result = decrypt_record(&mut handshake_keys, &record, true).unwrap();
 
                         let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
                             .expect("Failed to parse TLSInnerPlaintext");
@@ -927,28 +942,7 @@ fn main() {
 
             for record in response_records.unwrap() {
                 // No need to match, everything should be ApplicationData
-                // Create additional associated data for decryption
-                let aad = create_decryption_aad(&record).unwrap();
-
-                let payload = Payload {
-                    msg: &record.fragment,
-                    aad: &aad,
-                };
-
-                let nonce =
-                    create_nonce(handshake_keys.server_seq_num, &handshake_keys.server_ap_iv)
-                        .unwrap();
-
-                // Decryption cipher
-                let cipher = ChaCha20Poly1305::new_from_slice(&handshake_keys.server_ap_key);
-                debug!("{:?}", cipher.is_ok());
-
-                // Decrypt record
-                let result = cipher.unwrap().decrypt(&nonce, payload).unwrap();
-                debug!("Raw decrypted data: {:?}", result);
-
-                // Update sequence counter
-                handshake_keys.server_seq_num += 1;
+                let result = decrypt_record(&mut handshake_keys, &record, false).unwrap();
 
                 let plaintext = *TLSInnerPlaintext::from_bytes(&mut result.clone().into())
                     .expect("Failed to parse TLSInnerPlaintext");
