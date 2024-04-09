@@ -311,17 +311,20 @@ fn create_decryption_aad(record: &TLSRecord) -> io::Result<Vec<u8>> {
     Ok(aad)
 }
 
-// Calculate verify_data for client Handshake Finished message
-fn calculate_verify_data(
-    handshake_keys: &mut HandshakeKeys,
-    transcript_hash: &[u8],
-) -> io::Result<Vec<u8>> {
-    let mut hmac = <HmacSha256 as Mac>::new_from_slice(&handshake_keys.client_hs_finished_key)
-        .expect("Failed to initiate HMAC with key");
-    hmac.update(&transcript_hash);
-    let result = hmac.finalize();
+// Create nonce for ChaChaPoly1305 encryption/decryption
+fn create_nonce(sequence_number: u64, iv: &Vec<u8>) -> io::Result<Nonce> {
+    // NOTE: Stupid alert
+    let mut init_vec = vec![0u8; 4];
+    init_vec.splice(4.., sequence_number.to_be_bytes().to_vec());
 
-    Ok(result.into_bytes().to_vec())
+    // XOR iv and server_hs_iv to create decrytpion nonce
+    let nonce: Vec<u8> = init_vec
+        .iter()
+        .zip(iv.iter())
+        .map(|(&x1, &x2)| x1 ^ x2)
+        .collect();
+
+    Ok(*Nonce::from_slice(&nonce))
 }
 
 // Decrypt TSLRecord with ChaCha20Poly1305
@@ -364,20 +367,17 @@ fn decrypt_record(
     Ok(result)
 }
 
-// Create nonce for ChaChaPoly1305 encryption/decryption
-fn create_nonce(sequence_number: u64, iv: &Vec<u8>) -> io::Result<Nonce> {
-    // NOTE: Stupid alert
-    let mut init_vec = vec![0u8; 4];
-    init_vec.splice(4.., sequence_number.to_be_bytes().to_vec());
+// Calculate verify_data for client Handshake Finished message
+fn calculate_verify_data(
+    handshake_keys: &mut HandshakeKeys,
+    transcript_hash: &[u8],
+) -> io::Result<Vec<u8>> {
+    let mut hmac = <HmacSha256 as Mac>::new_from_slice(&handshake_keys.client_hs_finished_key)
+        .expect("Failed to initiate HMAC with key");
+    hmac.update(&transcript_hash);
+    let result = hmac.finalize();
 
-    // XOR iv and server_hs_iv to create decrytpion nonce
-    let nonce: Vec<u8> = init_vec
-        .iter()
-        .zip(iv.iter())
-        .map(|(&x1, &x2)| x1 ^ x2)
-        .collect();
-
-    Ok(*Nonce::from_slice(&nonce))
+    Ok(result.into_bytes().to_vec())
 }
 
 /// Main event loop for the TLS 1.3 client implementation
