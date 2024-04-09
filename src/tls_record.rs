@@ -96,7 +96,12 @@ impl ByteSerializable for TLSRecord {
         }
 
         if bytes.len() > length as usize {
-            let fragment = bytes.get_bytes(length as usize);
+            let fragment = bytes.get_bytes(length as usize).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid TLS Record length: buffer overflow",
+                )
+            })?;
 
             Ok(Box::from(TLSRecord {
                 record_type,
@@ -166,7 +171,12 @@ impl ByteSerializable for TLSInnerPlaintext {
         debug!("TLSInnerPlaintext padding size: {}", padding_size);
 
         // Minus 1 byte for content_type
-        let content = bytes.get_bytes(length - padding_size - 1);
+        let content = bytes.get_bytes(length - padding_size - 1).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "TLSInnerPlaintext content: buffer overflow",
+            )
+        })?;
         let content_type = match bytes.get_u8().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -183,7 +193,12 @@ impl ByteSerializable for TLSInnerPlaintext {
         debug!("TLSInnerPlaintext content type: {}", content_type as u8);
 
         // Remove zero padding from buffer
-        let zeros = bytes.get_bytes(padding_size);
+        let zeros = bytes.get_bytes(padding_size).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "TLSInnerPlaintext zeros: buffer overflow",
+            )
+        })?;
 
         Ok(Box::new(TLSInnerPlaintext {
             content,

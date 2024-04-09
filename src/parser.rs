@@ -1,6 +1,6 @@
 #![allow(clippy::module_name_repetitions)]
 //! Custom parser for parsing bytes from a `VecDeque<u8>`
-use std::collections::VecDeque;
+use std::{collections::VecDeque, io::ErrorKind};
 
 #[derive(Debug, Clone)]
 pub struct ByteParser {
@@ -17,26 +17,42 @@ impl ByteParser {
     }
     /// Consume 2 bytes from the deque and convert to u16
     pub fn get_u16(&mut self) -> Option<u16> {
+        //Some(u16::from_be_bytes(
+        //    self.deque.drain(..2).collect::<Vec<u8>>().try_into().ok()?,
+        //))
         Some(u16::from_be_bytes(
-            self.deque.drain(..2).collect::<Vec<u8>>().try_into().ok()?,
+            self.drain_bytes(2).ok()?.try_into().ok()?,
         ))
     }
     /// Consume 3 bytes from the deque and convert to u24 wrapped as u32
     pub fn get_u24(&mut self) -> Option<u32> {
         let mut tmp = vec![0u8]; // Need 4 bytes to convert to u32
-        tmp.extend(self.deque.drain(..3).collect::<Vec<u8>>());
+                                 //tmp.extend(self.deque.drain(..3).collect::<Vec<u8>>());
+        tmp.extend(self.drain_bytes(3).ok()?);
         Some(u32::from_be_bytes(tmp.try_into().ok()?))
     }
     /// Consume 4 bytes from the deque and convert to u32
     pub fn get_u32(&mut self) -> Option<u32> {
+        //Some(u32::from_be_bytes(
+        //    self.deque.drain(..4).collect::<Vec<u8>>().try_into().ok()?,
+        //))
         Some(u32::from_be_bytes(
-            self.deque.drain(..4).collect::<Vec<u8>>().try_into().ok()?,
+            self.drain_bytes(4).ok()?.try_into().ok()?,
         ))
     }
+
     /// Consume `count` bytes from the deque and convert to `Vec<u8>`
-    pub fn get_bytes(&mut self, count: usize) -> Vec<u8> {
+    fn drain_bytes(&mut self, count: usize) -> Result<Vec<u8>, ErrorKind> {
+        if count > self.len() {
+            return Err(std::io::ErrorKind::InvalidInput);
+        }
+        Ok(self.deque.drain(..count).collect::<Vec<u8>>())
+    }
+
+    /// Consume `count` bytes from the deque and convert to `Vec<u8>`
+    pub fn get_bytes(&mut self, count: usize) -> Option<Vec<u8>> {
         // TODO bound check, will panic. Oops...
-        self.deque.drain(..count).collect::<Vec<u8>>()
+        Some(self.drain_bytes(count).ok()?)
     }
     /// Consume all bytes from the deque
     pub fn drain(&mut self) -> Vec<u8> {

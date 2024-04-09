@@ -160,7 +160,14 @@ impl ByteSerializable for Handshake {
         })?;
 
         debug!("Handshake message length: {:?}", msg_length);
-        let mut hs_bytes = ByteParser::new(VecDeque::from(bytes.get_bytes(msg_length as usize)));
+        let mut hs_bytes = ByteParser::new(VecDeque::from(
+            bytes.get_bytes(msg_length as usize).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid handshake message length: buffer overflow",
+                )
+            })?,
+        ));
         let mut checksum = Vec::new();
 
         #[cfg(debug_assertions)]
@@ -243,7 +250,12 @@ impl ByteSerializable for Finished {
 
         // TODO: Check HMAC in use and choose length based on it
         let length = 32;
-        let verify_data = bytes.get_bytes(length as usize);
+        let verify_data = bytes.get_bytes(length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid Finished verify_data length: buffer overflow",
+            )
+        })?;
         let finished = Finished { verify_data };
 
         // Helper to identify that decoded bytes are encoded back to the same bytes
@@ -385,12 +397,21 @@ impl ByteSerializable for ServerHello {
             )
         })?;
 
-        let random: Random = bytes.get_bytes(32).try_into().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid ServerHello random",
-            )
-        })?;
+        let random: Random = bytes
+            .get_bytes(32)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ServerHello random length: buffer overflow",
+                )
+            })?
+            .try_into()
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ServerHello random",
+                )
+            })?;
 
         let session_id_length = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
@@ -399,8 +420,21 @@ impl ByteSerializable for ServerHello {
             )
         })?;
 
-        let session_id = bytes.get_bytes(session_id_length as usize);
-        let cipher_suite: CipherSuite = bytes.get_bytes(2).into();
+        let session_id = bytes.get_bytes(session_id_length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ServerHello session_id length: buffer overflow",
+            )
+        })?;
+        let cipher_suite: CipherSuite = bytes
+            .get_bytes(2)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ServerHello cipher_suite length: buffer overflow",
+                )
+            })?
+            .into();
         let compression_method = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -416,7 +450,12 @@ impl ByteSerializable for ServerHello {
         })?;
 
         let mut extensions = Vec::new();
-        let extension_bytes = bytes.get_bytes(extension_length as usize);
+        let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ServerHello extensions length: buffer overflow",
+            )
+        })?;
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
@@ -523,7 +562,12 @@ impl ByteSerializable for Certificate {
             )
         })?;
 
-        let crc = bytes.get_bytes(crc_length as usize);
+        let crc = bytes.get_bytes(crc_length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid certificate_request_context length: buffer overflow",
+            )
+        })?;
 
         let list_length = bytes.get_u24().ok_or_else(|| {
             std::io::Error::new(
@@ -545,7 +589,12 @@ impl ByteSerializable for Certificate {
                 )
             })?;
 
-            let cert_data = bytes.get_bytes(cert_data_length as usize);
+            let cert_data = bytes.get_bytes(cert_data_length as usize).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid certificate_data length: buffer overflow",
+                )
+            })?;
 
             // This could be replaced with EncryptedExtensions::from_bytes(), since it only decodes the Vec<Extension>
             // 2 byte length determinant for the extensions
@@ -557,7 +606,12 @@ impl ByteSerializable for Certificate {
             })?;
 
             let mut extensions = Vec::new();
-            let extension_bytes = bytes.get_bytes(extension_length as usize);
+            let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid Certificate extensions length: buffer overflow",
+                )
+            })?;
             let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
             while !ext_parser.deque.is_empty() {
@@ -631,7 +685,12 @@ impl ByteSerializable for EncryptedExtensions {
         })?;
 
         let mut extensions = Vec::new();
-        let extension_bytes = bytes.get_bytes(extension_length as usize);
+        let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid EncryptedExtensions extensions length: buffer overflow",
+            )
+        })?;
 
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
@@ -689,7 +748,12 @@ impl ByteSerializable for CertificateVerify {
             )
         })?;
 
-        let signature = bytes.get_bytes(length as usize);
+        let signature = bytes.get_bytes(length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid CertificateVerifty signature length: buffer overflow",
+            )
+        })?;
 
         let certificate_verify = CertificateVerify {
             algorithm: signature_scheme,
