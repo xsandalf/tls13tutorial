@@ -1,6 +1,5 @@
 //! This module contains the structures and implementations for the handshake messages.
 #![allow(clippy::module_name_repetitions)]
-use crate::display::to_hex;
 use crate::extensions::{ByteSerializable, Extension, ExtensionOrigin, SignatureScheme};
 use crate::handshake::cipher_suites::CipherSuite;
 use crate::parser::ByteParser;
@@ -102,12 +101,14 @@ impl ByteSerializable for Handshake {
     fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
         bytes.push(self.msg_type as u8);
+
         if self.length <= 0x00FF_FFFF {
             // convert u32 to 3 bytes
             bytes.extend_from_slice(&self.length.to_be_bytes()[1..]);
         } else {
             return None;
         }
+
         match &self.message {
             HandshakeMessage::ClientHello(client_hello) => {
                 bytes.extend_from_slice(&client_hello.as_bytes()?);
@@ -129,6 +130,7 @@ impl ByteSerializable for Handshake {
             }
             _ => {}
         }
+
         Some(bytes)
     }
 
@@ -149,21 +151,25 @@ impl ByteSerializable for Handshake {
                 ))
             }
         };
+
         let msg_length = bytes.get_u24().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid handshake message length",
             )
         })?;
+
         debug!("Handshake message length: {:?}", msg_length);
         let mut hs_bytes = ByteParser::new(VecDeque::from(bytes.get_bytes(msg_length as usize)));
         let mut checksum = Vec::new();
+
         #[cfg(debug_assertions)]
         {
             checksum.push(hs_type.clone() as u8);
             checksum.extend_from_slice(&msg_length.clone().to_be_bytes()[1..]);
             checksum.extend(hs_bytes.deque.clone().iter());
         }
+
         let hs_message = match hs_type {
             HandshakeType::ClientHello => {
                 let client_hello = ClientHello::from_bytes(&mut hs_bytes)?;
@@ -196,11 +202,14 @@ impl ByteSerializable for Handshake {
                 ))
             }
         };
+
         let handshake = Handshake {
             msg_type: hs_type,
             length: msg_length,
             message: hs_message,
         };
+
+        // Helper to identify that decoded bytes are encoded back to the same bytes
         #[cfg(debug_assertions)]
         {
             assert_eq!(checksum, handshake.as_bytes().unwrap());
@@ -219,7 +228,6 @@ pub struct Finished {
 
 impl ByteSerializable for Finished {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // DONE, untested. todo!("Implement Finished::as_bytes")
         let mut bytes = Vec::new();
         bytes.extend(self.verify_data.iter());
         Some(bytes)
@@ -227,19 +235,23 @@ impl ByteSerializable for Finished {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         let checksum;
+
         #[cfg(debug_assertions)]
         {
             checksum = bytes.deque.clone();
         }
-        // DONE, tested. todo!("Implement Finished::from_bytes")
+
         // TODO: Check HMAC in use and choose length based on it
         let length = 32;
         let verify_data = bytes.get_bytes(length as usize);
         let finished = Finished { verify_data };
+
+        // Helper to identify that decoded bytes are encoded back to the same bytes
         #[cfg(debug_assertions)]
         {
             assert_eq!(checksum, finished.as_bytes().unwrap());
         }
+
         Ok(Box::new(finished))
     }
 }
@@ -344,18 +356,23 @@ impl ByteSerializable for ServerHello {
         bytes.extend(self.legacy_session_id_echo.iter());
         bytes.extend(self.cipher_suite.as_ref());
         bytes.push(self.legacy_compression_method);
+
         let mut ext_bytes = Vec::new();
+
         for extension in &self.extensions {
             ext_bytes.extend(extension.as_bytes()?);
         }
+
         bytes.extend(u16::try_from(ext_bytes.len()).ok()?.to_be_bytes());
         bytes.extend(ext_bytes);
+
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         #[allow(unused)]
         let checksum: VecDeque<u8>;
+
         #[cfg(debug_assertions)]
         {
             checksum = bytes.deque.clone();
@@ -367,18 +384,21 @@ impl ByteSerializable for ServerHello {
                 "Invalid ServerHello legacy version",
             )
         })?;
+
         let random: Random = bytes.get_bytes(32).try_into().map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ServerHello random",
             )
         })?;
+
         let session_id_length = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ServerHello session id length",
             )
         })?;
+
         let session_id = bytes.get_bytes(session_id_length as usize);
         let cipher_suite: CipherSuite = bytes.get_bytes(2).into();
         let compression_method = bytes.get_u8().ok_or_else(|| {
@@ -387,12 +407,14 @@ impl ByteSerializable for ServerHello {
                 "Invalid ServerHello compression method",
             )
         })?;
+
         let extension_length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ServerHello extension length",
             )
         })?;
+
         let mut extensions = Vec::new();
         let extension_bytes = bytes.get_bytes(extension_length as usize);
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
@@ -410,11 +432,13 @@ impl ByteSerializable for ServerHello {
             legacy_compression_method: compression_method,
             extensions,
         });
+
         // Helper to identify that decoded bytes are encoded back to the same bytes
         #[cfg(debug_assertions)]
         {
             assert_eq!(checksum, server_hello.as_bytes().unwrap());
         }
+
         Ok(server_hello)
     }
 }
@@ -445,16 +469,16 @@ pub struct Certificate {
 
 impl ByteSerializable for Certificate {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // TODO: Untested. todo!("Implement Certificate::as_bytes")
         // TODO: Refactor, this is a mess
         let mut bytes = Vec::new();
+
         // 1 byte length determinant for the certificate_request_context
         bytes.push(u8::try_from(self.certificate_request_context.len()).ok()?);
         bytes.extend(self.certificate_request_context.iter());
+
         let mut ce_bytes = Vec::new();
+
         for cert_entry in &self.certificate_list {
-            // NOTE: This is not included
-            // ce_bytes.push(cert_entry.certificate_type as u8);
             // 3 byte length determinant for the certificate_data
             ce_bytes.extend_from_slice(
                 u32::try_from(cert_entry.certificate_data.len())
@@ -462,6 +486,7 @@ impl ByteSerializable for Certificate {
                     .to_be_bytes()[1..]
                     .as_ref(),
             );
+
             ce_bytes.extend_from_slice(&cert_entry.certificate_data);
 
             // This could be replaced with EncryptedExtensions::as_bytes(), since it only encodes the Vec<Extension>
@@ -469,9 +494,11 @@ impl ByteSerializable for Certificate {
             for extension in &cert_entry.extensions {
                 ext_bytes.extend(extension.as_bytes()?);
             }
+
             ce_bytes.extend(u16::try_from(ext_bytes.len()).ok()?.to_be_bytes());
             ce_bytes.extend(ext_bytes);
         }
+
         // 3 byte length determinant for the certificate_list
         bytes.extend_from_slice(u32::try_from(ce_bytes.len()).ok()?.to_be_bytes()[1..].as_ref());
         bytes.extend(ce_bytes);
@@ -481,13 +508,13 @@ impl ByteSerializable for Certificate {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         let checksum;
+
         #[cfg(debug_assertions)]
         {
             checksum = bytes.deque.clone();
         }
-        // TODO: Untested. todo!("Implement Certificate::from_bytes")
+
         // TODO: Refactor, this is a mess
-        debug!("Raw certificate data: {:?}", bytes);
         // 1 byte length determinant for the certificate_request_context
         let crc_length = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
@@ -495,7 +522,7 @@ impl ByteSerializable for Certificate {
                 "Invalid certificate request context length",
             )
         })?;
-        debug!("Certificate request context length: {:?}", crc_length);
+
         let crc = bytes.get_bytes(crc_length as usize);
 
         let list_length = bytes.get_u24().ok_or_else(|| {
@@ -504,24 +531,12 @@ impl ByteSerializable for Certificate {
                 "Invalid certificate list length",
             )
         })?;
-        debug!("Certificate list length: {:?}", list_length);
-        //let cert_list = bytes.get_bytes(list_length as usize);
 
         // NOTE: Stupid loop time
         let mut i = 0;
         let mut cert_entries = Vec::new();
 
         while i < list_length {
-            // NOTE: This is not included
-            /*let cert_type = match bytes.get_u8().ok_or_else(ByteParser::insufficient_data)? {
-                0 => Ok(Box::new(CertificateType::X509)),
-                2 => Ok(Box::new(CertificateType::RawPublicKey)),
-                _ => Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid CertificationType",
-                )),
-            };
-            debug!("Certificate type: {:?}", cert_type);*/
             // 3 byte length determinant for the certificate_data
             let cert_data_length = bytes.get_u24().ok_or_else(|| {
                 std::io::Error::new(
@@ -529,9 +544,9 @@ impl ByteSerializable for Certificate {
                     "Invalid CertificateEntry certification data length",
                 )
             })?;
-            debug!("Certificate data length: {:?}", cert_data_length);
+
             let cert_data = bytes.get_bytes(cert_data_length as usize);
-            debug!("Cert data: {:?}", to_hex(&cert_data));
+
             // This could be replaced with EncryptedExtensions::from_bytes(), since it only decodes the Vec<Extension>
             // 2 byte length determinant for the extensions
             let extension_length = bytes.get_u16().ok_or_else(|| {
@@ -540,7 +555,7 @@ impl ByteSerializable for Certificate {
                     "Invalid CertificateEntry extension length",
                 )
             })?;
-            debug!("Certificate extension length: {:?}", extension_length);
+
             let mut extensions = Vec::new();
             let extension_bytes = bytes.get_bytes(extension_length as usize);
             let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
@@ -562,15 +577,18 @@ impl ByteSerializable for Certificate {
             // 1 for certificate_type, 3 for certificate_data length, 2 for extensions length
             i += 1 + 3 + cert_data_length + 2 + (extension_length as u32);
         }
+
         let certificate = Certificate {
             certificate_request_context: crc,
             certificate_list: cert_entries,
         };
+
         // Helper to identify that decoded bytes are encoded back to the same bytes
         #[cfg(debug_assertions)]
         {
             assert_eq!(checksum, certificate.as_bytes().unwrap());
         }
+
         Ok(Box::new(certificate))
     }
 }
@@ -583,24 +601,27 @@ pub struct EncryptedExtensions {
 
 impl ByteSerializable for EncryptedExtensions {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // TODO: Untested
         let mut bytes = Vec::new();
         let mut ext_bytes = Vec::new();
+
         for extension in &self.extensions {
             ext_bytes.extend(extension.as_bytes()?);
         }
+
         bytes.extend(u16::try_from(ext_bytes.len()).ok()?.to_be_bytes());
         bytes.extend(ext_bytes);
+
         Some(bytes)
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         let checksum;
+
         #[cfg(debug_assertions)]
         {
             checksum = bytes.deque.clone();
         }
-        //DONE, tested.
+
         // 2 byte length determinant for the extensions
         let extension_length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
@@ -608,23 +629,25 @@ impl ByteSerializable for EncryptedExtensions {
                 "Invalid EncryptedExtensions extension length",
             )
         })?;
-        debug!("Encrypted extension length: {:?}", extension_length);
+
         let mut extensions = Vec::new();
         let extension_bytes = bytes.get_bytes(extension_length as usize);
-        debug!("Encrypted extension bytes: {:?}", extension_bytes);
+
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
             let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
-            debug!("Extension bytes: {:?}", extension.as_bytes());
             extensions.push(*extension);
         }
+
         let encrypted_extensions = EncryptedExtensions { extensions };
+
         // Helper to identify that decoded bytes are encoded back to the same bytes
         #[cfg(debug_assertions)]
         {
             assert_eq!(checksum, encrypted_extensions.as_bytes().unwrap());
         }
+
         Ok(Box::new(encrypted_extensions))
     }
 }
@@ -638,9 +661,9 @@ pub struct CertificateVerify {
 
 impl ByteSerializable for CertificateVerify {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // TODO: Untested
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.algorithm.as_bytes()?);
+
         // 2 byte length determinant for the signature
         bytes.extend(u16::try_from(self.signature.len()).ok()?.to_be_bytes());
         bytes.extend(self.signature.iter());
@@ -649,11 +672,12 @@ impl ByteSerializable for CertificateVerify {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         let checksum;
+
         #[cfg(debug_assertions)]
         {
             checksum = bytes.deque.clone();
         }
-        // TODO: Tested
+
         let signature_scheme = *SignatureScheme::from_bytes(bytes)
             .expect("Failed to parse CertificateVerify algorithm");
 
@@ -664,18 +688,20 @@ impl ByteSerializable for CertificateVerify {
                 "Invalid CertificateVerify signature length",
             )
         })?;
-        debug!("CertificateVerify signature length: {:?}", length);
+
         let signature = bytes.get_bytes(length as usize);
-        debug!("CertificateVerify signature: {:?}", to_hex(&signature));
+
         let certificate_verify = CertificateVerify {
             algorithm: signature_scheme,
             signature,
         };
+
         // Helper to identify that decoded bytes are encoded back to the same bytes
         #[cfg(debug_assertions)]
         {
             assert_eq!(checksum, certificate_verify.as_bytes().unwrap());
         }
+
         Ok(Box::new(certificate_verify))
     }
 }
