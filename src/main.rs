@@ -497,6 +497,46 @@ fn validate_certificate(certificate_data: &[u8], hostname: &str) {
     // NOTE: Too difficult to implemenet currently
 }
 
+// Verify certificate with EcdsaSecp256r1Sha256 signature
+fn verify_certificate(certificate_data: &[u8], transcript_hash: &[u8], cert_signature: &[u8]) {
+    // Parse certificate
+    let certificate = rasn::der::decode::<rasn_pkix::Certificate>(&certificate_data)
+        .expect("Failed to parse Certificate");
+
+    // Extract certificate public key
+    let mut cert_public_key = certificate
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key;
+
+    let mut pkey: Vec<u8> = Vec::new();
+
+    cert_public_key
+        .read_to_end(&mut pkey)
+        .expect("Failed to read Certificate public key");
+
+    // Create the message server signed to produce the signature
+    let mut message = vec![0x20; 64];
+    message.extend_from_slice(b"TLS 1.3, server CertificateVerify");
+    message.push(0x00);
+    message.extend_from_slice(&transcript_hash);
+
+    // Load public key as EncodedPoint and use it initalize VerifyingKey
+    let enc_point = EncodedPoint::from_bytes(&pkey)
+        .expect("Failed to parse EncodedPoint from Certificate public key");
+    let ver_key = VerifyingKey::from_encoded_point(&enc_point)
+        .expect("Failed to parse VerifyingKey from Certificate public key");
+    let signature = Signature::from_der(&cert_signature)
+        .expect("Failed to parse Signature from CertificateVerify signature");
+
+    // Verify certificate
+    let result = ver_key.verify(&message, &signature);
+    if result.is_err() {
+        // TODO: Terminate with alert "bad_certificate"
+        debug!("Sanity check: Certificate couldn't be verified");
+    }
+}
+
 // Calculate verify_data for client Handshake Finished message
 fn calculate_verify_data(
     handshake_keys: &mut HandshakeKeys,
@@ -758,44 +798,14 @@ fn main() {
                                         }
                                         HandshakeMessage::CertificateVerify(certificate_verify) => {
                                             debug!("Verify this cert data: {:?}", cert_data);
-                                            // Parse certificate
-                                            let cert = rasn::der::decode::<rasn_pkix::Certificate>(
-                                                &cert_data,
-                                            )
-                                            .expect("Failed to parse Certificate");
-
-                                            // Extract certificate public key
-                                            let mut cert_public_key = cert
-                                                .tbs_certificate
-                                                .subject_public_key_info
-                                                .subject_public_key;
-                                            let mut pkey: Vec<u8> = Vec::new();
-                                            cert_public_key
-                                                .read_to_end(&mut pkey)
-                                                .expect("Failed to read Certificate public key");
-                                            debug!("Cert public key: {:?}", pkey);
-                                            debug!("Cert public key: {:?}", to_hex(&pkey));
-
-                                            // Create the message server signed to produce the signature
-                                            let mut message = vec![0x20; 64];
-                                            message.extend_from_slice(
-                                                b"TLS 1.3, server CertificateVerify",
-                                            );
-                                            message.push(0x00);
-                                            message.extend_from_slice(&sha256.clone().finalize());
-
-                                            // Load public key as EncodedPoint and use it initalize VerifyingKey
-                                            let enc_point = EncodedPoint::from_bytes(&pkey).expect("Failed to parse EncodedPoint from Certificate public key");
-                                            let ver_key =
-                                                VerifyingKey::from_encoded_point(&enc_point).expect("Failed to parse VerifyingKey from Certificate public key");
-                                            let signature = Signature::from_der(&certificate_verify.signature).expect("Failed to parse Signature from CertificateVerify signature");
+                                            let transcript_hash = sha256.clone().finalize();
 
                                             // Verify certificate
-                                            let result = ver_key.verify(&message, &signature);
-                                            if result.is_err() {
-                                                // TODO: Terminate with alert "bad_certificate"
-                                                debug!("Sanity check: Certificate couldn't be verified");
-                                            }
+                                            verify_certificate(
+                                                &cert_data,
+                                                &transcript_hash,
+                                                &certificate_verify.signature,
+                                            )
                                         }
                                         HandshakeMessage::Finished(finished) => {
                                             let mut hmac = <HmacSha256 as Mac>::new_from_slice(
