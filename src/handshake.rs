@@ -17,7 +17,7 @@ pub const TLS_VERSION_1_3: ProtocolVersion = 0x0304;
 /// Our client primarily supports ChaCha20-Poly1305 with SHA-256
 /// See more [here.](https://datatracker.ietf.org/doc/html/rfc8446#appendix-B.4)
 pub mod cipher_suites {
-    #[derive(Debug, Copy, Clone)]
+    #[derive(Debug, Copy, Clone, PartialEq)]
     pub struct CipherSuite([u8; 2]);
     impl AsRef<[u8]> for CipherSuite {
         #[must_use]
@@ -61,7 +61,7 @@ pub mod cipher_suites {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum HandshakeType {
     ClientHello = 1,
     ServerHello = 2,
@@ -76,7 +76,7 @@ pub enum HandshakeType {
     MessageHash = 254,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HandshakeMessage {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
@@ -90,7 +90,7 @@ pub enum HandshakeMessage {
     KeyUpdate,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Handshake {
     pub msg_type: HandshakeType,
     pub length: u32, // length of the data can be 0..2^24-1 (3 bytes to present)
@@ -226,7 +226,7 @@ impl ByteSerializable for Handshake {
 }
 
 /// `Finished` message is the final message in the Authentication Block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Finished {
     // NOTE: Length is not actually included in the bytes. Length is based on the HMAC used for the handshake
     // We currently support only 32 byte HMAC
@@ -273,7 +273,7 @@ impl ByteSerializable for Finished {
 ///       a `legacy_version` of 0x0303 and a `supported_versions` extension
 ///       present with 0x0304 as the highest version indicated therein.
 ///       (See Appendix D for details about backward compatibility.)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClientHello {
     pub legacy_version: ProtocolVersion,     // 2 bytes to represent
     pub random: Random,                      // Static 32 bytes, no length prefix
@@ -343,13 +343,148 @@ impl ByteSerializable for ClientHello {
         Some(bytes)
     }
 
-    fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        todo!("Implement ClientHello::from_bytes")
+    fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        // TODO: Untest. todo!("Implement ClientHello::from_bytes")
+        #[allow(unused)]
+        let checksum: VecDeque<u8>;
+
+        #[cfg(debug_assertions)]
+        {
+            checksum = bytes.deque.clone();
+        }
+
+        let legacy_version = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello legacy version",
+            )
+        })?;
+
+        let random: Random = bytes
+            .get_bytes(32)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ClientHello random length: buffer overflow",
+                )
+            })?
+            .try_into()
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ClientHello random",
+                )
+            })?;
+
+        let session_id_length = bytes.get_u8().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello session id length",
+            )
+        })?;
+
+        let session_id = bytes.get_bytes(session_id_length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello session_id length: buffer overflow",
+            )
+        })?;
+
+        let cipher_suites_length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello cipher_suites length",
+            )
+        })?;
+
+        let mut ciph_suites = Vec::new();
+        let cipher_suite_bytes =
+            bytes
+                .get_bytes(cipher_suites_length as usize)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ClientHello cipher_suites length: buffer overflow",
+                    )
+                })?;
+
+        let mut cs_parser = ByteParser::new(VecDeque::from(cipher_suite_bytes));
+
+        while !cs_parser.deque.is_empty() {
+            let cs = CipherSuite::from(cs_parser.get_bytes(2).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ClientHello cipher suite",
+                )
+            })?);
+            ciph_suites.push(cs);
+        }
+
+        let compression_methods_length = bytes.get_u8().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello compression methods length",
+            )
+        })?;
+
+        let compression_methods = bytes
+            .get_bytes(compression_methods_length as usize)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ClientHello compression methods length: buffer overflow",
+                )
+            })?;
+
+        let extension_length = bytes.get_u16().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello extension length",
+            )
+        })?;
+
+        let mut extensions = Vec::new();
+        let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ClientHello extensions length: buffer overflow",
+            )
+        })?;
+
+        let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
+
+        while !ext_parser.deque.is_empty() {
+            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Client)
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ClientHello Extension",
+                    )
+                })?;
+            extensions.push(*extension);
+        }
+
+        let client_hello = Box::from(ClientHello {
+            legacy_version,
+            random,
+            legacy_session_id: session_id,
+            cipher_suites: ciph_suites,
+            legacy_compression_methods: compression_methods,
+            extensions,
+        });
+
+        // Helper to identify that decoded bytes are encoded back to the same bytes
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(checksum, client_hello.as_bytes().unwrap());
+        }
+
+        Ok(client_hello)
     }
 }
 
 /// `ServerHello` message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServerHello {
     pub legacy_version: ProtocolVersion,
     pub random: Random,
@@ -426,6 +561,7 @@ impl ByteSerializable for ServerHello {
                 "Invalid ServerHello session_id length: buffer overflow",
             )
         })?;
+
         let cipher_suite: CipherSuite = bytes
             .get_bytes(2)
             .ok_or_else(|| {
@@ -435,6 +571,7 @@ impl ByteSerializable for ServerHello {
                 )
             })?
             .into();
+
         let compression_method = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -456,10 +593,17 @@ impl ByteSerializable for ServerHello {
                 "Invalid ServerHello extensions length: buffer overflow",
             )
         })?;
+
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
-            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
+            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ServerHello Extension",
+                    )
+                })?;
             extensions.push(*extension);
         }
 
@@ -483,7 +627,7 @@ impl ByteSerializable for ServerHello {
 }
 
 /// `CertificateType` which is presented with 1-byte enum values
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum CertificateType {
     X509 = 0,
     RawPublicKey = 2,
@@ -491,7 +635,7 @@ pub enum CertificateType {
 
 /// A single certificate and set of extensions as defined in Section 4.2.
 /// TODO: Implement ByteSerializable
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CertificateEntry {
     pub certificate_type: CertificateType, // NOTE: This is not included in the messages. Do not encode/decode
     pub certificate_data: Vec<u8>, // length of the data can be 1..2^24-1 (3 bytes to present)
@@ -500,7 +644,7 @@ pub struct CertificateEntry {
 
 /// [`Certificate` message](https://datatracker.ietf.org/doc/html/rfc8446#section-4.4.2)
 ///  This message conveys the endpoint's certificate chain to the peer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Certificate {
     pub certificate_request_context: Vec<u8>, // length of the data can be 0..255 (1 byte to present)
     pub certificate_list: Vec<CertificateEntry>, // length of the data can be 0..2^24-1 (3 bytes to present)
@@ -615,13 +759,20 @@ impl ByteSerializable for Certificate {
             let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
             while !ext_parser.deque.is_empty() {
-                let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
+                let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid Certificate Extension",
+                        )
+                    })?;
                 extensions.push(*extension);
             }
 
             cert_entries.push(CertificateEntry {
                 // NOTE: No idea how this is determined, probably SupportedGroup or SignatureAlgorithm
                 // Leaning towards SignatureAlgorithm
+                // TODO: Figure this out and implement
                 certificate_type: CertificateType::X509,
                 certificate_data: cert_data,
                 extensions,
@@ -648,7 +799,7 @@ impl ByteSerializable for Certificate {
 }
 
 /// `EncryptedExtensions` message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EncryptedExtensions {
     pub extensions: Vec<Extension>, // length of the data can be 0..2^16-1 (2 bytes to present)
 }
@@ -695,7 +846,13 @@ impl ByteSerializable for EncryptedExtensions {
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
-            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)?;
+            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid EncryptedExtensions Extension",
+                    )
+                })?;
             extensions.push(*extension);
         }
 
@@ -712,7 +869,7 @@ impl ByteSerializable for EncryptedExtensions {
 }
 
 /// `CertificateVerify` message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CertificateVerify {
     pub algorithm: SignatureScheme,
     pub signature: Vec<u8>, // length of the data can be 0..2^16-1 (2 bytes to present)
@@ -737,8 +894,12 @@ impl ByteSerializable for CertificateVerify {
             checksum = bytes.deque.clone();
         }
 
-        let signature_scheme = *SignatureScheme::from_bytes(bytes)
-            .expect("Failed to parse CertificateVerify algorithm");
+        let signature_scheme = *SignatureScheme::from_bytes(bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid CertificateVerify SignatureScheme",
+            )
+        })?;
 
         // 2 byte length determinant for the signature
         let length = bytes.get_u16().ok_or_else(|| {
@@ -767,5 +928,893 @@ impl ByteSerializable for CertificateVerify {
         }
 
         Ok(Box::new(certificate_verify))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::vec;
+
+    // NOTE: ExtensionData tests not included due to incomplete implementation of from_bytes()
+    use super::*;
+    use crate::{display::to_hex, extensions::*, round_trip};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_finished() {
+        // Positive
+        round_trip!(
+            Finished,
+            Finished {
+                verify_data: vec![
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                ]
+            },
+            &[
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+                0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+                0x1C, 0x1D, 0x1E, 0x1F,
+            ]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(Finished::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Finished::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Finished::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Finished verify_data length: buffer overflow"
+        ));
+    }
+
+    #[test]
+    fn test_handshake_finished() {
+        let handshake = Handshake {
+            msg_type: HandshakeType::Finished,
+            length: 32 as u32,
+            message: HandshakeMessage::Finished(Finished {
+                verify_data: vec![
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                ],
+            }),
+        };
+        let bytes = handshake.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x14, 0x00, 0x00, 0x20, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+                0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+                0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F
+            ]
+        );
+        let hs = Handshake::from_bytes(&mut ByteParser::from(bytes)).unwrap();
+        assert_eq!(*hs, handshake);
+    }
+
+    #[test]
+    fn test_client_hello() {
+        // Positive
+        round_trip!(
+            ClientHello,
+            ClientHello {
+                legacy_version: TLS_VERSION_COMPATIBILITY,
+                random: [
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                ],
+                legacy_session_id: vec![0x01, 0x0F],
+                cipher_suites: vec![
+                    cipher_suites::TLS_CHACHA20_POLY1305_SHA256,
+                    cipher_suites::TLS_AES_128_CCM_SHA256
+                ],
+                legacy_compression_methods: vec![0x00],
+                extensions: vec![
+                    Extension {
+                        origin: ExtensionOrigin::Client,
+                        extension_type: ExtensionType::Cookie,
+                        extension_data: ExtensionData::Cookie(Cookie {
+                            cookie: vec![0x03, 0x0F, 0x04, 0x10],
+                        }),
+                    },
+                    Extension {
+                        origin: ExtensionOrigin::Client,
+                        extension_type: ExtensionType::PskKeyExchangeModes,
+                        extension_data: ExtensionData::PskKeyExchangeModes(PskKeyExchangeModes {
+                            ke_modes: vec![PskKeyExchangeMode::PskDheKe],
+                        }),
+                    }
+                ]
+            },
+            &[
+                0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+                0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x02, 0x01, 0x0F, 0x00, 0x04, 0x13, 0x03, 0x13,
+                0x04, 0x01, 0x00, 0x00, 0x10, 0x00, 0x2C, 0x00, 0x06, 0x00, 0x04, 0x03, 0x0F, 0x04,
+                0x10, 0x00, 0x2D, 0x00, 0x02, 0x01, 0x01,
+            ]
+        );
+
+        // Negative
+        // NOTE: Would be better to use slices
+        let bytes = ByteParser::from(vec![]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello legacy version"
+        ));
+
+        let bytes = ByteParser::from(vec![0x04, 0x01]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello random length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello session id length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello session_id length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello cipher_suites length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x01,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello cipher_suites length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x01, 0x00,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello cipher suite"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello compression methods length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello compression methods length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello extension length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
+            0x00, 0x01,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello extensions length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
+            0x00, 0x01, 0x00,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello Extension"
+        ));
+    }
+
+    #[test]
+    fn test_handshake_client_hello() {
+        let handshake = Handshake {
+            msg_type: HandshakeType::ClientHello,
+            length: 55 as u32,
+            message: HandshakeMessage::ClientHello(ClientHello {
+                legacy_version: TLS_VERSION_COMPATIBILITY,
+                random: [
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                ],
+                legacy_session_id: vec![0x04, 0x05],
+                cipher_suites: vec![cipher_suites::TLS_CHACHA20_POLY1305_SHA256],
+                legacy_compression_methods: vec![0x00],
+                extensions: vec![Extension {
+                    origin: ExtensionOrigin::Client,
+                    extension_type: ExtensionType::Cookie,
+                    extension_data: ExtensionData::Cookie(Cookie {
+                        cookie: vec![0x13, 0x02, 0x09, 0xA0],
+                    }),
+                }],
+            }),
+        };
+        let bytes = handshake.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x01, 0x00, 0x00, 0x37, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x02, 0x04, 0x05, 0x00,
+                0x02, 0x13, 0x03, 0x01, 0x00, 0x00, 0x0A, 0x00, 0x2C, 0x00, 0x06, 0x00, 0x04, 0x13,
+                0x02, 0x09, 0xA0,
+            ]
+        );
+        let hs = Handshake::from_bytes(&mut ByteParser::from(bytes)).unwrap();
+        assert_eq!(*hs, handshake);
+    }
+
+    #[test]
+    fn test_server_hello() {
+        // Positive
+        round_trip!(
+            ServerHello,
+            ServerHello {
+                legacy_version: TLS_VERSION_COMPATIBILITY,
+                random: [
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                ],
+                legacy_session_id_echo: vec![0x01, 0x0F],
+                cipher_suite: cipher_suites::TLS_CHACHA20_POLY1305_SHA256,
+                legacy_compression_method: 0x00,
+                extensions: vec![
+                    Extension {
+                        origin: ExtensionOrigin::Server,
+                        extension_type: ExtensionType::Cookie,
+                        extension_data: ExtensionData::Cookie(Cookie {
+                            cookie: vec![0x03, 0x0F, 0x04, 0x10],
+                        }),
+                    },
+                    Extension {
+                        origin: ExtensionOrigin::Server,
+                        extension_type: ExtensionType::PskKeyExchangeModes,
+                        extension_data: ExtensionData::PskKeyExchangeModes(PskKeyExchangeModes {
+                            ke_modes: vec![PskKeyExchangeMode::PskDheKe],
+                        }),
+                    }
+                ]
+            },
+            &[
+                0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+                0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x02, 0x01, 0x0F, 0x13, 0x03, 0x00, 0x00, 0x10,
+                0x00, 0x2C, 0x00, 0x06, 0x00, 0x04, 0x03, 0x0F, 0x04, 0x10, 0x00, 0x2D, 0x00, 0x02,
+                0x01, 0x01,
+            ]
+        );
+
+        // Negative
+        // NOTE: Would be better to use slices
+        let bytes = ByteParser::from(vec![]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello legacy version"
+        ));
+
+        let bytes = ByteParser::from(vec![0x04, 0x01]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello random length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello session id length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello session_id length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello cipher_suite length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello compression method"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello extension length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x01,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello extensions length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x01, 0x00,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello Extension"
+        ));
+    }
+
+    #[test]
+    fn test_handshake_server_hello() {
+        let handshake = Handshake {
+            msg_type: HandshakeType::ServerHello,
+            length: 52 as u32,
+            message: HandshakeMessage::ServerHello(ServerHello {
+                legacy_version: TLS_VERSION_COMPATIBILITY,
+                random: [
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                ],
+                legacy_session_id_echo: vec![0x04, 0x05],
+                cipher_suite: cipher_suites::TLS_CHACHA20_POLY1305_SHA256,
+                legacy_compression_method: 0x00,
+                extensions: vec![Extension {
+                    origin: ExtensionOrigin::Server,
+                    extension_type: ExtensionType::Cookie,
+                    extension_data: ExtensionData::Cookie(Cookie {
+                        cookie: vec![0x13, 0x02, 0x09, 0xA0],
+                    }),
+                }],
+            }),
+        };
+        let bytes = handshake.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x02, 0x00, 0x00, 0x34, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x02, 0x04, 0x05, 0x13,
+                0x03, 0x00, 0x00, 0x0A, 0x00, 0x2C, 0x00, 0x06, 0x00, 0x04, 0x13, 0x02, 0x09, 0xA0,
+            ]
+        );
+        let hs = Handshake::from_bytes(&mut ByteParser::from(bytes)).unwrap();
+        assert_eq!(*hs, handshake);
+    }
+
+    #[test]
+    fn test_certificate() {
+        // Positive
+        round_trip!(
+            Certificate,
+            Certificate {
+                certificate_request_context: vec![0x04, 0xFF, 0xC3, 0xF1, 0x00, 0x2C],
+                certificate_list: vec![
+                    CertificateEntry {
+                        certificate_type: CertificateType::X509,
+                        certificate_data: vec![0x03, 0x1D, 0x51, 0x0F],
+                        extensions: vec![
+                            Extension {
+                                origin: ExtensionOrigin::Server,
+                                extension_type: ExtensionType::PskKeyExchangeModes,
+                                extension_data: ExtensionData::PskKeyExchangeModes(
+                                    PskKeyExchangeModes {
+                                        ke_modes: vec![PskKeyExchangeMode::PskDheKe],
+                                    }
+                                ),
+                            },
+                            Extension {
+                                origin: ExtensionOrigin::Server,
+                                extension_type: ExtensionType::KeyShare,
+                                extension_data: ExtensionData::KeyShareServerHello(
+                                    KeyShareServerHello {
+                                        server_share: KeyShareEntry {
+                                            group: NamedGroup::Secp384r1,
+                                            key_exchange: vec![0x44, 0x33, 0x55, 0xCC],
+                                        },
+                                    }
+                                ),
+                            }
+                        ]
+                    },
+                    CertificateEntry {
+                        certificate_type: CertificateType::X509,
+                        certificate_data: vec![0x03, 0x1D, 0x51, 0x0F],
+                        extensions: vec![Extension {
+                            origin: ExtensionOrigin::Server,
+                            extension_type: ExtensionType::SignatureAlgorithms,
+                            extension_data: ExtensionData::SignatureAlgorithms(
+                                SupportedSignatureAlgorithms {
+                                    supported_signature_algorithms: vec![
+                                        SignatureScheme::Ed25519,
+                                        SignatureScheme::EcdsaSha1,
+                                    ],
+                                }
+                            ),
+                        }]
+                    }
+                ]
+            },
+            &[
+                0x06, 0x04, 0xFF, 0xC3, 0xF1, 0x00, 0x2C, 0x00, 0x00, 0x2E, 0x00, 0x00, 0x04, 0x03,
+                0x1D, 0x51, 0x0F, 0x00, 0x12, 0x00, 0x2D, 0x00, 0x02, 0x01, 0x01, 0x00, 0x33, 0x00,
+                0x08, 0x00, 0x18, 0x00, 0x04, 0x44, 0x33, 0x55, 0xCC, 0x00, 0x00, 0x04, 0x03, 0x1D,
+                0x51, 0x0F, 0x00, 0x0A, 0x00, 0x0D, 0x00, 0x06, 0x00, 0x04, 0x08, 0x07, 0x02, 0x03
+            ]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid certificate request context length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid certificate_request_context length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid certificate list length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x00, 0x01]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid CertificateEntry certification data length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x01]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid certificate_data length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid CertificateEntry extension length"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01,
+        ]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate extensions length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x01, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
+        ]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate Extension"
+        ));
+    }
+
+    #[test]
+    fn test_handshake_certificate() {
+        let handshake = Handshake {
+            msg_type: HandshakeType::Certificate,
+            length: 23 as u32,
+            message: HandshakeMessage::Certificate(Certificate {
+                certificate_request_context: vec![0x03, 0x01, 0x0A],
+                certificate_list: vec![CertificateEntry {
+                    certificate_type: CertificateType::X509,
+                    certificate_data: vec![0x00, 0x01, 0x02, 0x03, 0x04],
+                    extensions: vec![Extension {
+                        origin: ExtensionOrigin::Server,
+                        extension_type: ExtensionType::SupportedVersions,
+                        extension_data: ExtensionData::SupportedVersions(SupportedVersions {
+                            version: VersionKind::Selected(0x22FF),
+                        }),
+                    }],
+                }],
+            }),
+        };
+        let bytes = handshake.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x0B, 0x00, 0x00, 0x17, 0x03, 0x03, 0x01, 0x0A, 0x00, 0x00, 0x10, 0x00, 0x00, 0x05,
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0x06, 0x00, 0x2B, 0x00, 0x02, 0x22, 0xFF
+            ]
+        );
+        let hs = Handshake::from_bytes(&mut ByteParser::from(bytes)).unwrap();
+        assert_eq!(*hs, handshake);
+    }
+
+    #[test]
+    fn test_encrypted_extensions() {
+        // Positive
+        round_trip!(
+            EncryptedExtensions,
+            EncryptedExtensions {
+                extensions: vec![
+                    Extension {
+                        origin: ExtensionOrigin::Server,
+                        extension_type: ExtensionType::ServerName,
+                        extension_data: ExtensionData::ServerName(ServerNameList {
+                            server_name_list: vec![ServerName {
+                                name_type: NameType::HostName,
+                                host_name: "another.domain.net".as_bytes().to_vec(),
+                            }],
+                        }),
+                    },
+                    Extension {
+                        origin: ExtensionOrigin::Server,
+                        extension_type: ExtensionType::Cookie,
+                        extension_data: ExtensionData::Cookie(Cookie {
+                            cookie: vec![0x03, 0x0F, 0x04, 0x10],
+                        }),
+                    }
+                ]
+            },
+            &[
+                0x00, 0x25, 0x00, 0x00, 0x00, 0x17, 0x00, 0x15, 0x00, 0x00, 0x12, 0x61, 0x6E, 0x6F,
+                0x74, 0x68, 0x65, 0x72, 0x2E, 0x64, 0x6F, 0x6D, 0x61, 0x69, 0x6E, 0x2E, 0x6E, 0x65,
+                0x74, 0x00, 0x2C, 0x00, 0x06, 0x00, 0x04, 0x03, 0x0F, 0x04, 0x10
+            ]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid EncryptedExtensions extension length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid EncryptedExtensions extensions length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00]);
+        assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid EncryptedExtensions Extension"
+        ));
+    }
+
+    #[test]
+    fn test_handshake_encrypted_extensions() {
+        let handshake = Handshake {
+            msg_type: HandshakeType::EncryptedExtensions,
+            length: 14 as u32,
+            message: HandshakeMessage::EncryptedExtensions(EncryptedExtensions {
+                extensions: vec![Extension {
+                    origin: ExtensionOrigin::Server,
+                    extension_type: ExtensionType::KeyShare,
+                    extension_data: ExtensionData::KeyShareServerHello(KeyShareServerHello {
+                        server_share: KeyShareEntry {
+                            group: NamedGroup::Secp384r1,
+                            key_exchange: vec![0x44, 0x33, 0x55, 0xCC],
+                        },
+                    }),
+                }],
+            }),
+        };
+        let bytes = handshake.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x08, 0x00, 0x00, 0x0E, 0x00, 0x0C, 0x00, 0x33, 0x00, 0x08, 0x00, 0x18, 0x00, 0x04,
+                0x44, 0x33, 0x55, 0xCC
+            ]
+        );
+        let hs = Handshake::from_bytes(&mut ByteParser::from(bytes)).unwrap();
+        assert_eq!(*hs, handshake);
+    }
+
+    #[test]
+    fn test_certificate_verify() {
+        // Positive
+        round_trip!(
+            CertificateVerify,
+            CertificateVerify {
+                algorithm: SignatureScheme::EcdsaSecp384r1Sha384,
+                signature: vec![0x45, 0x67, 0xAC, 0xF4, 0x9D]
+            },
+            &[0x05, 0x03, 0x00, 0x05, 0x45, 0x67, 0xAC, 0xF4, 0x9D]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(CertificateVerify::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid CertificateVerify SignatureScheme"
+        ));
+
+        let bytes = ByteParser::from(vec![0x04, 0x01]);
+        assert!(CertificateVerify::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid CertificateVerify signature length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x04, 0x01, 0x00, 0x01]);
+        assert!(CertificateVerify::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid CertificateVerifty signature length: buffer overflow"
+        ));
+    }
+
+    #[test]
+    fn test_handshake_certificate_verify() {
+        let handshake = Handshake {
+            msg_type: HandshakeType::CertificateVerify,
+            length: 8 as u32,
+            message: HandshakeMessage::CertificateVerify(CertificateVerify {
+                algorithm: SignatureScheme::EcdsaSecp256r1Sha256,
+                signature: vec![0xF4, 0xC1, 0x55, 0x9D],
+            }),
+        };
+        let bytes = handshake.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x0F, 0x00, 0x00, 0x08, 0x04, 0x03, 0x00, 0x04, 0xF4, 0xC1, 0x55, 0x9D]
+        );
+        let hs = Handshake::from_bytes(&mut ByteParser::from(bytes)).unwrap();
+        assert_eq!(*hs, handshake);
     }
 }
