@@ -950,7 +950,7 @@ impl ByteSerializable for PskKeyExchangeModes {
 /// ## Cookie extension
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cookie {
-    cookie: Vec<u8>, // (2 bytes to present the length)
+    pub cookie: Vec<u8>, // (2 bytes to present the length)
 }
 
 impl ByteSerializable for Cookie {
