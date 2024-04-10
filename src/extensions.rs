@@ -1,7 +1,6 @@
 //! # TLS Extensions and their encoding/decoding
 //!
 //! Includes `ByteSerializable` trait for converting structures into bytes and constructing again.
-use crate::display::to_hex;
 use crate::handshake::ProtocolVersion;
 use crate::parser::ByteParser;
 use ::log::{debug, warn};
@@ -79,9 +78,12 @@ impl Extension {
             45 => ExtensionData::PskKeyExchangeModes(*PskKeyExchangeModes::from_bytes(
                 &mut ext_bytes,
             )?),
-            51 => ExtensionData::KeyShareServerHello(*KeyShareServerHello::from_bytes(
-                &mut ext_bytes,
-            )?), // Use origin to choose server or client
+            51 if origin == ExtensionOrigin::Server => ExtensionData::KeyShareServerHello(
+                *KeyShareServerHello::from_bytes(&mut ext_bytes)?,
+            ),
+            51 if origin == ExtensionOrigin::Client => ExtensionData::KeyShareClientHello(
+                *KeyShareClientHello::from_bytes(&mut ext_bytes)?,
+            ),
             _ => {
                 warn!("Unknown ExtensionType: {}", ext_type);
                 return Err(std::io::Error::new(
@@ -177,7 +179,7 @@ pub enum ExtensionData {
     KeyShareServerHello(KeyShareServerHello),
     PskKeyExchangeModes(PskKeyExchangeModes),
     Cookie(Cookie),
-    Unserialized(Vec<u8>),
+    //Unserialized(Vec<u8>), // TODO: Remove
 }
 
 impl ByteSerializable for ExtensionData {
@@ -199,13 +201,18 @@ impl ByteSerializable for ExtensionData {
                 psk_key_exchange_modes.as_bytes()
             }
             ExtensionData::Cookie(cookie) => cookie.as_bytes(),
-            ExtensionData::Unserialized(data) => Some(data.clone()),
+            /*_ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid ExtensionData",
+            )),*/
+            //ExtensionData::Unserialized(data) => Some(data.clone()),
         }
     }
 
     fn from_bytes(_bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         todo!("ExtensionData from_bytes() not implemented")
         // NOTE: This is not needed because Extension::from_bytes() calls specific extensions from_bytes() directly
+        // NOTE: Also no idea how this would be implemented
     }
 }
 
@@ -696,7 +703,7 @@ impl ByteSerializable for KeyShareEntry {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // NOTE: I am not sure if this is a good idea
+        // NOTE: I am not sure if this is a good idea to do unchecked
         let named_group = *NamedGroup::from_bytes(bytes)?;
 
         // 2 byte length determinant for the `key_exchange`
@@ -714,8 +721,6 @@ impl ByteSerializable for KeyShareEntry {
             )
         })?;
 
-        // NOTE: Should this have error check, or should that be in the get_bytes() method
-        // NOTE: Length should be checked
         Ok(Box::new(KeyShareEntry {
             group: named_group,
             key_exchange,
@@ -879,7 +884,6 @@ pub struct Cookie {
 
 impl ByteSerializable for Cookie {
     fn as_bytes(&self) -> Option<Vec<u8>> {
-        // TODO: Needs to be tested
         let mut bytes = Vec::new();
         // 2 byte length determinant for the `cookie`
         bytes.extend(
@@ -893,7 +897,6 @@ impl ByteSerializable for Cookie {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Needs to be tested
         // 2 byte length determinant for the `key_exchange`
         let length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid cookie length")
@@ -906,20 +909,116 @@ impl ByteSerializable for Cookie {
             )
         })?;
 
-        // NOTE: Should this have error check, or should that be in the get_bytes() method
-        // NOTE: Length should be checked
         Ok(Box::new(Cookie { cookie }))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
-
+    // NOTE: ExtensionData tests not included due to incomplete implementation of from_bytes()
     use super::*;
     use crate::round_trip;
     use pretty_assertions::assert_eq;
-    use rasn_pkix::Name;
+
+    #[test]
+    fn test_extension() {
+        // NOTE: Positive testing is included in test_extension_* functions
+        // Negative
+        let bytes = ByteParser::from(vec![0x0F]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid extension type"
+        ));
+
+        let bytes = ByteParser::from(vec![0x0F, 0x01, 0xDC]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid extension data length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x0F, 0x01, 0xDC, 0xFF]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid Extensions length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x0F, 0x01, 0x00, 0x01, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid extension data"
+        ));
+    }
+
+    #[test]
+    fn test_extension_type() {
+        // NOTE: Dumb tests due to ExtensionType implementation
+        // Positive
+        assert_eq!(ExtensionType::from(0), ExtensionType::ServerName);
+        assert_eq!(ExtensionType::from(1), ExtensionType::MaxFragmentLength);
+        assert_eq!(ExtensionType::from(5), ExtensionType::StatusRequest);
+        assert_eq!(ExtensionType::from(10), ExtensionType::SupportedGroups);
+        assert_eq!(ExtensionType::from(13), ExtensionType::SignatureAlgorithms);
+        assert_eq!(ExtensionType::from(14), ExtensionType::UseSrtp);
+        assert_eq!(ExtensionType::from(15), ExtensionType::Heartbeat);
+        assert_eq!(
+            ExtensionType::from(16),
+            ExtensionType::ApplicationLayerProtocolNegotiation
+        );
+        assert_eq!(
+            ExtensionType::from(18),
+            ExtensionType::SignedCertificateTimestamp
+        );
+        assert_eq!(
+            ExtensionType::from(19),
+            ExtensionType::ClientCertificateType
+        );
+        assert_eq!(
+            ExtensionType::from(20),
+            ExtensionType::ServerCertificateType
+        );
+        assert_eq!(ExtensionType::from(21), ExtensionType::Padding);
+        assert_eq!(ExtensionType::from(41), ExtensionType::PreSharedKey);
+        assert_eq!(ExtensionType::from(42), ExtensionType::EarlyData);
+        assert_eq!(ExtensionType::from(43), ExtensionType::SupportedVersions);
+        assert_eq!(ExtensionType::from(44), ExtensionType::Cookie);
+        assert_eq!(ExtensionType::from(45), ExtensionType::PskKeyExchangeModes);
+        assert_eq!(
+            ExtensionType::from(47),
+            ExtensionType::CertificateAuthorities
+        );
+        assert_eq!(ExtensionType::from(48), ExtensionType::OidFilters);
+        assert_eq!(ExtensionType::from(49), ExtensionType::PostHandshakeAuth);
+        assert_eq!(
+            ExtensionType::from(50),
+            ExtensionType::SignatureAlgorithmsCert
+        );
+        assert_eq!(ExtensionType::from(51), ExtensionType::KeyShare);
+
+        //Negative
+        assert_eq!(ExtensionType::from(2), ExtensionType::ServerName);
+        assert_eq!(ExtensionType::from(3), ExtensionType::ServerName);
+        assert_eq!(ExtensionType::from(4), ExtensionType::ServerName);
+    }
 
     #[test]
     fn test_supported_versions() {
@@ -1015,14 +1114,22 @@ mod tests {
         round_trip!(
             ServerNameList,
             ServerNameList {
-                server_name_list: vec![ServerName {
-                    name_type: NameType::HostName,
-                    host_name: "example.domain.org".as_bytes().to_vec(),
-                }],
+                server_name_list: vec![
+                    ServerName {
+                        name_type: NameType::HostName,
+                        host_name: "example.domain.org".as_bytes().to_vec(),
+                    },
+                    ServerName {
+                        name_type: NameType::HostName,
+                        host_name: "example.website.com".as_bytes().to_vec(),
+                    }
+                ],
             },
             &[
-                0x00, 0x15, 0x00, 0x00, 0x12, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x64,
-                0x6F, 0x6D, 0x61, 0x69, 0x6E, 0x2E, 0x6F, 0x72, 0x67
+                0x00, 0x2B, 0x00, 0x00, 0x12, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x64,
+                0x6F, 0x6D, 0x61, 0x69, 0x6E, 0x2E, 0x6F, 0x72, 0x67, 0x00, 0x00, 0x13, 0x65, 0x78,
+                0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x77, 0x65, 0x62, 0x73, 0x69, 0x74, 0x65, 0x2E,
+                0x63, 0x6F, 0x6D
             ]
         );
 
@@ -1253,6 +1360,260 @@ mod tests {
         assert_eq!(bytes, vec![0x00, 0x0A, 0x00, 0x04, 0x00, 0x02, 0x01, 0x00]);
         let ext =
             Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Client).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn test_key_share_entry() {
+        // Positive
+        round_trip!(
+            KeyShareEntry,
+            KeyShareEntry {
+                group: NamedGroup::Secp256r1,
+                key_exchange: vec![0xFF, 0x4D, 0x56]
+            },
+            &[0x00, 0x17, 0x00, 0x03, 0xFF, 0x4D, 0x56]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![0x00, 0x17, 0x01]);
+        assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid key exchange length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x17, 0x00, 0x01]);
+        assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid KeyShareEntry key_exchange length: buffer overflow"
+        ));
+    }
+
+    #[test]
+    fn test_key_share_client_hello() {
+        // Positive
+        round_trip!(
+            KeyShareClientHello,
+            KeyShareClientHello {
+                client_shares: vec![
+                    KeyShareEntry {
+                        group: NamedGroup::X25519,
+                        key_exchange: vec![0x00, 0x02, 0x32, 0x5B],
+                    },
+                    KeyShareEntry {
+                        group: NamedGroup::Ffdhe4096,
+                        key_exchange: vec![0x00, 0x03, 0xFF, 0x0C, 0x13]
+                    }
+                ]
+            },
+            &[
+                0x00, 0x11, 0x00, 0x1D, 0x00, 0x04, 0x00, 0x02, 0x32, 0x5B, 0x01, 0x02, 0x00, 0x05,
+                0x00, 0x03, 0xFF, 0x0C, 0x13
+            ]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![0x17]);
+        assert!(KeyShareClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid client shares length"
+        ));
+    }
+
+    #[test]
+    fn test_extension_key_share_client_hello() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Client,
+            extension_type: ExtensionType::KeyShare,
+            extension_data: ExtensionData::KeyShareClientHello(KeyShareClientHello {
+                client_shares: vec![KeyShareEntry {
+                    group: NamedGroup::Secp521r1,
+                    key_exchange: vec![0x00, 0x04, 0xD3, 0x5C, 0x12, 0x07],
+                }],
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x00, 0x33, 0x00, 0x0C, 0x00, 0x0A, 0x00, 0x19, 0x00, 0x06, 0x00, 0x04, 0xD3, 0x5C,
+                0x12, 0x07
+            ]
+        );
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Client).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn test_key_share_server_hello() {
+        // Positive
+        round_trip!(
+            KeyShareServerHello,
+            KeyShareServerHello {
+                server_share: KeyShareEntry {
+                    group: NamedGroup::Ffdhe6144,
+                    key_exchange: vec![0x80, 0x54, 0x2F, 0xE1]
+                }
+            },
+            &[0x01, 0x03, 0x00, 0x04, 0x80, 0x54, 0x2F, 0xE1]
+        );
+
+        // Negative
+        // Not available
+    }
+
+    #[test]
+    fn test_extension_key_share_server_hello() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Server,
+            extension_type: ExtensionType::KeyShare,
+            extension_data: ExtensionData::KeyShareServerHello(KeyShareServerHello {
+                server_share: KeyShareEntry {
+                    group: NamedGroup::Secp384r1,
+                    key_exchange: vec![0x44, 0x33, 0x55, 0xCC],
+                },
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x00, 0x33, 0x00, 0x08, 0x00, 0x18, 0x00, 0x04, 0x44, 0x33, 0x55, 0xCC]
+        );
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Server).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn test_psk_key_exchange_modes() {
+        // Positive
+        round_trip!(
+            PskKeyExchangeModes,
+            PskKeyExchangeModes {
+                ke_modes: vec![PskKeyExchangeMode::PskKe, PskKeyExchangeMode::PskDheKe]
+            },
+            &[0x02, 0x00, 0x01]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(PskKeyExchangeModes::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ke modes length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01]);
+        assert!(PskKeyExchangeModes::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Insufficient data when parsing input bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x03]);
+        assert!(PskKeyExchangeModes::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid pre-shared Key exchange mode"
+        ));
+    }
+
+    #[test]
+    fn test_extension_psk_key_exchange_modes() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Server,
+            extension_type: ExtensionType::PskKeyExchangeModes,
+            extension_data: ExtensionData::PskKeyExchangeModes(PskKeyExchangeModes {
+                ke_modes: vec![PskKeyExchangeMode::PskDheKe],
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(bytes, vec![0x00, 0x2D, 0x00, 0x02, 0x01, 0x01]);
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Server).unwrap();
+        assert_eq!(*ext, extension);
+    }
+
+    #[test]
+    fn test_cookie() {
+        // Positive
+        round_trip!(
+            Cookie,
+            Cookie {
+                cookie: vec![0x12, 0x13, 0x14, 0x15]
+            },
+            &[0x00, 0x04, 0x12, 0x13, 0x14, 0x15]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![0xCE]);
+        assert!(Cookie::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Cookie::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Cookie::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid cookie length"
+        ));
+
+        // Negative
+        let bytes = ByteParser::from(vec![0x00, 0x02]);
+        assert!(Cookie::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Cookie::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Cookie::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Cookie length: buffer overflow"
+        ));
+    }
+
+    #[test]
+    fn test_extension_cookie() {
+        let extension = Extension {
+            origin: ExtensionOrigin::Server,
+            extension_type: ExtensionType::Cookie,
+            extension_data: ExtensionData::Cookie(Cookie {
+                cookie: vec![0x03, 0x0F, 0x04, 0x10],
+            }),
+        };
+        let bytes = extension.as_bytes().unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x00, 0x2C, 0x00, 0x06, 0x00, 0x04, 0x03, 0x0F, 0x04, 0x10]
+        );
+        let ext =
+            Extension::from_bytes(&mut ByteParser::from(bytes), ExtensionOrigin::Server).unwrap();
         assert_eq!(*ext, extension);
     }
 
