@@ -68,21 +68,67 @@ impl Extension {
         let mut ext_bytes = ByteParser::from(ext_data);
 
         let extension_data = match ext_type {
-            0 => ExtensionData::ServerName(*ServerNameList::from_bytes(&mut ext_bytes)?),
-            10 => ExtensionData::SupportedGroups(*NamedGroupList::from_bytes(&mut ext_bytes)?),
-            13 => ExtensionData::SignatureAlgorithms(*SupportedSignatureAlgorithms::from_bytes(
-                &mut ext_bytes,
+            0 => ExtensionData::ServerName(*ServerNameList::from_bytes(&mut ext_bytes).map_err(
+                |_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData ServerNameList",
+                    )
+                },
             )?),
-            43 => ExtensionData::SupportedVersions(*SupportedVersions::from_bytes(&mut ext_bytes)?),
-            44 => ExtensionData::Cookie(*Cookie::from_bytes(&mut ext_bytes)?),
-            45 => ExtensionData::PskKeyExchangeModes(*PskKeyExchangeModes::from_bytes(
-                &mut ext_bytes,
-            )?),
+            10 => ExtensionData::SupportedGroups(
+                *NamedGroupList::from_bytes(&mut ext_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData SupportedGroups",
+                    )
+                })?,
+            ),
+            13 => ExtensionData::SignatureAlgorithms(
+                *SupportedSignatureAlgorithms::from_bytes(&mut ext_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData SignatureAlgorithms",
+                    )
+                })?,
+            ),
+            43 => ExtensionData::SupportedVersions(
+                *SupportedVersions::from_bytes(&mut ext_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData SupportedVersions",
+                    )
+                })?,
+            ),
+            44 => ExtensionData::Cookie(*Cookie::from_bytes(&mut ext_bytes).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ExtensionData Cookie",
+                )
+            })?),
+            45 => ExtensionData::PskKeyExchangeModes(
+                *PskKeyExchangeModes::from_bytes(&mut ext_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData PskKeyExchangeModes",
+                    )
+                })?,
+            ),
             51 if origin == ExtensionOrigin::Server => ExtensionData::KeyShareServerHello(
-                *KeyShareServerHello::from_bytes(&mut ext_bytes)?,
+                *KeyShareServerHello::from_bytes(&mut ext_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData KeyShareServerHello",
+                    )
+                })?,
             ),
             51 if origin == ExtensionOrigin::Client => ExtensionData::KeyShareClientHello(
-                *KeyShareClientHello::from_bytes(&mut ext_bytes)?,
+                *KeyShareClientHello::from_bytes(&mut ext_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ExtensionData KeyShareClientHello",
+                    )
+                })?,
             ),
             _ => {
                 warn!("Unknown ExtensionType: {}", ext_type);
@@ -565,7 +611,12 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
 
         while i < length {
             // NOTE: I am not sure if this is a good idea
-            signature_schemes.push(*SignatureScheme::from_bytes(bytes)?);
+            signature_schemes.push(*SignatureScheme::from_bytes(bytes).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid SupportedSignatureAlgorithms SignatureScheme",
+                )
+            })?);
             i += 2
         }
 
@@ -670,7 +721,12 @@ impl ByteSerializable for NamedGroupList {
 
         while i < length {
             // NOTE: I am not sure if this is a good idea
-            named_groups.push(*NamedGroup::from_bytes(bytes)?);
+            named_groups.push(*NamedGroup::from_bytes(bytes).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid NamedGroupList NamedGroup",
+                )
+            })?);
             i += 2
         }
 
@@ -704,7 +760,12 @@ impl ByteSerializable for KeyShareEntry {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         // NOTE: I am not sure if this is a good idea to do unchecked
-        let named_group = *NamedGroup::from_bytes(bytes)?;
+        let named_group = *NamedGroup::from_bytes(bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid KeyShareEntry NamedGroup",
+            )
+        })?;
 
         // 2 byte length determinant for the `key_exchange`
         let length = bytes.get_u16().ok_or_else(|| {
@@ -776,7 +837,12 @@ impl ByteSerializable for KeyShareClientHello {
             let len = bytes.len();
 
             // NOTE: I am not sure if this is a good idea
-            key_shares.push(*KeyShareEntry::from_bytes(bytes)?);
+            key_shares.push(*KeyShareEntry::from_bytes(bytes).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid KeyShareClientHello KeyShareEntry",
+                )
+            })?);
 
             // NOTE: Stupid but it is a start part 2
             i += (len - bytes.len()) as u16
@@ -801,7 +867,12 @@ impl ByteSerializable for KeyShareServerHello {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         Ok(Box::new(KeyShareServerHello {
-            server_share: *KeyShareEntry::from_bytes(bytes)?,
+            server_share: *KeyShareEntry::from_bytes(bytes).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid KeyShareServerHello KeyShareEntry",
+                )
+            })?,
         }))
     }
 }
@@ -966,6 +1037,94 @@ mod tests {
         assert!(matches!(
             Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
             Err(ref e) if e.to_string() == "Invalid extension data"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData ServerNameList"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x0A, 0x00, 0x01, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData SupportedGroups"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x0D, 0x00, 0x01, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData SignatureAlgorithms"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x2B, 0x00, 0x01, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData SupportedVersions"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x2C, 0x00, 0x01, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData Cookie"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x2D, 0x00, 0x01, 0x05]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData PskKeyExchangeModes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x33, 0x00, 0x01, 0x05]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Server,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Server),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Server),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData KeyShareServerHello"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x33, 0x00, 0x01, 0x05]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Invalid ExtensionData KeyShareClientHello"
         ));
     }
 
@@ -1270,6 +1429,17 @@ mod tests {
             SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid supported signature algorithms length"
         ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        assert!(SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid SupportedSignatureAlgorithms SignatureScheme"
+        ));
     }
 
     #[test]
@@ -1345,6 +1515,17 @@ mod tests {
             NamedGroupList::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid named group list length"
         ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        assert!(NamedGroupList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid NamedGroupList NamedGroup"
+        ));
     }
 
     #[test]
@@ -1376,6 +1557,17 @@ mod tests {
         );
 
         // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid KeyShareEntry NamedGroup"
+        ));
+
         let bytes = ByteParser::from(vec![0x00, 0x17, 0x01]);
         assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1433,6 +1625,17 @@ mod tests {
             KeyShareClientHello::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid client shares length"
         ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x02]);
+        assert!(KeyShareClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid KeyShareClientHello KeyShareEntry"
+        ));
     }
 
     #[test]
@@ -1475,7 +1678,16 @@ mod tests {
         );
 
         // Negative
-        // Not available
+        let bytes = ByteParser::from(vec![0x17]);
+        assert!(KeyShareServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid KeyShareServerHello KeyShareEntry"
+        ));
     }
 
     #[test]
