@@ -240,7 +240,7 @@ impl ByteSerializable for Handshake {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Invalid handshake message type",
-                ))
+                )); // Unreachable error
             }
         };
 
