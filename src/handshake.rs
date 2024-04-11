@@ -148,7 +148,7 @@ impl ByteSerializable for Handshake {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Invalid or unimplemented handshake type: {e:?}"),
-                ))
+                ));
             }
         };
 
@@ -160,6 +160,7 @@ impl ByteSerializable for Handshake {
         })?;
 
         debug!("Handshake message length: {:?}", msg_length);
+
         let mut hs_bytes = ByteParser::new(VecDeque::from(
             bytes.get_bytes(msg_length as usize).ok_or_else(|| {
                 std::io::Error::new(
@@ -168,6 +169,7 @@ impl ByteSerializable for Handshake {
                 )
             })?,
         ));
+
         let mut checksum = Vec::new();
 
         #[cfg(debug_assertions)]
@@ -179,27 +181,59 @@ impl ByteSerializable for Handshake {
 
         let hs_message = match hs_type {
             HandshakeType::ClientHello => {
-                let client_hello = ClientHello::from_bytes(&mut hs_bytes)?;
+                let client_hello = ClientHello::from_bytes(&mut hs_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ClientHello HandshakeMessage",
+                    )
+                })?;
                 HandshakeMessage::ClientHello(*client_hello)
             }
             HandshakeType::ServerHello => {
-                let server_hello = ServerHello::from_bytes(&mut hs_bytes)?;
+                let server_hello = ServerHello::from_bytes(&mut hs_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid ServerHello HandshakeMessage",
+                    )
+                })?;
                 HandshakeMessage::ServerHello(*server_hello)
             }
             HandshakeType::EncryptedExtensions => {
-                let encrypted_extensions = EncryptedExtensions::from_bytes(&mut hs_bytes)?;
+                let encrypted_extensions =
+                    EncryptedExtensions::from_bytes(&mut hs_bytes).map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid EncryptedExtensions HandshakeMessage",
+                        )
+                    })?;
                 HandshakeMessage::EncryptedExtensions(*encrypted_extensions)
             }
             HandshakeType::Certificate => {
-                let certificate = Certificate::from_bytes(&mut hs_bytes)?;
+                let certificate = Certificate::from_bytes(&mut hs_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid Certificate HandshakeMessage",
+                    )
+                })?;
                 HandshakeMessage::Certificate(*certificate)
             }
             HandshakeType::CertificateVerify => {
-                let certificate_verify = CertificateVerify::from_bytes(&mut hs_bytes)?;
+                let certificate_verify =
+                    CertificateVerify::from_bytes(&mut hs_bytes).map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid CertificateVerify HandshakeMessage",
+                        )
+                    })?;
                 HandshakeMessage::CertificateVerify(*certificate_verify)
             }
             HandshakeType::Finished => {
-                let finished = Finished::from_bytes(&mut hs_bytes)?;
+                let finished = Finished::from_bytes(&mut hs_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid Finished HandshakeMessage",
+                    )
+                })?;
                 HandshakeMessage::Finished(*finished)
             }
             _ => {
@@ -933,12 +967,114 @@ impl ByteSerializable for CertificateVerify {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::{extensions::*, round_trip};
+    use pretty_assertions::assert_eq;
     use std::vec;
 
-    // NOTE: ExtensionData tests not included due to incomplete implementation of from_bytes()
-    use super::*;
-    use crate::{display::to_hex, extensions::*, round_trip};
-    use pretty_assertions::assert_eq;
+    #[test]
+    fn test_handshake() {
+        // NOTE: Positive testing is included in test_handshake_* functions
+        // Negative
+        let bytes = ByteParser::from(vec![0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid or unimplemented handshake type: Some(0)"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid handshake message length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x01]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid handshake message length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello HandshakeMessage"
+        ));
+
+        let bytes = ByteParser::from(vec![0x02, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello HandshakeMessage"
+        ));
+
+        let bytes = ByteParser::from(vec![0x08, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid EncryptedExtensions HandshakeMessage"
+        ));
+
+        let bytes = ByteParser::from(vec![0x0B, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate HandshakeMessage"
+        ));
+
+        let bytes = ByteParser::from(vec![0x0F, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid CertificateVerify HandshakeMessage"
+        ));
+
+        let bytes = ByteParser::from(vec![0x14, 0x00, 0x00, 0x01, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Finished HandshakeMessage"
+        ));
+    }
 
     #[test]
     fn test_finished() {
