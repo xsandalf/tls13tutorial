@@ -30,7 +30,7 @@ pub struct Extension {
 }
 
 impl Extension {
-    pub(crate) fn as_bytes(&self) -> Option<Vec<u8>> {
+    pub fn as_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice((self.extension_type as u16).to_be_bytes().as_ref());
         let ext_bytes = self.extension_data.as_bytes()?;
@@ -40,7 +40,7 @@ impl Extension {
         Some(bytes)
     }
 
-    pub(crate) fn from_bytes(
+    pub fn from_bytes(
         bytes: &mut ByteParser,
         origin: ExtensionOrigin,
     ) -> std::io::Result<Box<Self>> {
@@ -59,12 +59,20 @@ impl Extension {
 
         debug!("Extension data length: {}", ext_data_len);
 
+        if bytes.len() > (ext_data_len as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Extension: ext_data_len and byte.len() mismatch",
+            ));
+        }
+
         let ext_data = bytes.get_bytes(ext_data_len as usize).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid Extensions length: buffer overflow",
             )
         })?;
+
         let mut ext_bytes = ByteParser::from(ext_data);
 
         let extension_data = match ext_type {
@@ -317,8 +325,15 @@ impl ByteSerializable for SupportedVersions {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Invalid suggested versions length",
-                )
+                ) // Unreachable error
             })?;
+
+            if bytes.len() > (length as usize) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "SupportedVersions: list_length and byte.len() mismatch",
+                ));
+            }
 
             // Suggested versions are two bytes each
             // This means length should be % 2 == 0
@@ -413,6 +428,10 @@ impl ByteSerializable for ServerNameList {
         // If server_name_list is empty, assume above and return Ok
         // TODO: Create seperate extension for when server sends ServerNameList,
         // same way as KeyShareClientHello and KeyShareServerHello
+        // NOTE: This causes issues when fuzzing, comment it out for now
+        // Cause of the issue as_bytes(from_bytes(vec![0x00, 0x00])) == [], obviously [0x00, 0x00] != []
+        // If you fix above by returning [0x00, 0x00] in as_bytes when server_name_list is empty, then
+        // as_bytes(from_bytes(vec![])) == [0x00, 0x00 ], obviously [] != [0x00, 0x00]
         if self.server_name_list.is_empty() {
             return Some(bytes);
         }
@@ -449,6 +468,10 @@ impl ByteSerializable for ServerNameList {
         // In this event, the server SHALL include an extension of type "server_name" in the (extended) server hello.
         // The "extension_data" field of this extension SHALL be empty.
         // If bytes is empty, assume above and return Ok
+        // NOTE: This causes issues when fuzzing, comment it out for now
+        // Cause of the issue as_bytes(from_bytes(vec![0x00, 0x00])) == [], obviously [0x00, 0x00] != []
+        // If you fix above by returning [0x00, 0x00] in as_bytes when server_name_list is empty, then
+        // as_bytes(from_bytes(vec![])) == [0x00, 0x00 ], obviously [] != [0x00, 0x00]
         if bytes.is_empty() {
             return Ok(Box::new(ServerNameList {
                 server_name_list: Vec::new(),
@@ -463,18 +486,32 @@ impl ByteSerializable for ServerNameList {
             )
         })?;
 
+        if bytes.len() > (list_length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ServerNameList: list_length and byte.len() mismatch",
+            ));
+        }
+
         // NOTE: Stupid loop time
         let mut i = 0;
         let mut server_names = Vec::new();
 
         while i < list_length {
             // 1 byte for name_type, which is always 0
-            let _name_type = bytes.get_u8().ok_or_else(|| {
+            let name_type = bytes.get_u8().ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Invalid server name name type",
-                )
+                ) // Unreachable error
             })?;
+
+            if name_type != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid server name name_type",
+                ));
+            }
 
             // 2 byte length determinant for the ASCII byte presentation of the name
             let length = bytes.get_u16().ok_or_else(|| {
@@ -491,8 +528,6 @@ impl ByteSerializable for ServerNameList {
                 )
             })?;
 
-            // NOTE: Should this have error check, or should that be in the get_bytes() method
-            // TODO: Don't autoassume name_type == 0, test it
             server_names.push(ServerName {
                 name_type: NameType::HostName,
                 host_name: hostname,
@@ -552,6 +587,13 @@ impl ByteSerializable for SignatureScheme {
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
         // SignatureScheme value is 2 bytes
+        if bytes.len() > 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "SupportedSignatureAlgorithms: list_length and byte.len() mismatch",
+            ));
+        }
+
         // NOTE: This feels very dumb, but I am not familiar with Rust
         match bytes.get_u16().ok_or_else(ByteParser::insufficient_data)? {
             0x0401 => Ok(Box::new(SignatureScheme::RsaPkcs1Sha256)),
@@ -605,18 +647,36 @@ impl ByteSerializable for SupportedSignatureAlgorithms {
             )
         })?;
 
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "SupportedSignatureAlgorithms: list_length and byte.len() mismatch",
+            ));
+        }
+
         // NOTE: Stupid loop time
         let mut i = 0;
         let mut signature_schemes = Vec::new();
 
         while i < length {
             // NOTE: I am not sure if this is a good idea
-            signature_schemes.push(*SignatureScheme::from_bytes(bytes).map_err(|_| {
+            let scheme_bytes = bytes.get_bytes(2).ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "Invalid SupportedSignatureAlgorithms SignatureScheme",
+                    "Invalid signature scheme bytes",
                 )
-            })?);
+            })?;
+
+            signature_schemes.push(
+                *SignatureScheme::from_bytes(&mut ByteParser::from(scheme_bytes)).map_err(
+                    |_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid SupportedSignatureAlgorithms SignatureScheme",
+                        )
+                    },
+                )?,
+            );
             i += 2
         }
 
@@ -661,6 +721,13 @@ impl ByteSerializable for NamedGroup {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
+        if bytes.len() > 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "NamedGroup: list_length and byte.len() mismatch",
+            ));
+        }
+
         match bytes.get_u16().ok_or_else(ByteParser::insufficient_data)? {
             0x0017 => Ok(Box::new(NamedGroup::Secp256r1)),
             0x0018 => Ok(Box::new(NamedGroup::Secp384r1)),
@@ -715,18 +782,31 @@ impl ByteSerializable for NamedGroupList {
             )
         })?;
 
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "NamedGroupList: list_length and byte.len() mismatch",
+            ));
+        }
+
         // NOTE: Stupid loop time
         let mut i = 0;
         let mut named_groups = Vec::new();
 
         while i < length {
             // NOTE: I am not sure if this is a good idea
-            named_groups.push(*NamedGroup::from_bytes(bytes).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid NamedGroupList NamedGroup",
-                )
-            })?);
+            let ng_bytes = bytes.get_bytes(2).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid named group bytes")
+            })?;
+
+            named_groups.push(
+                *NamedGroup::from_bytes(&mut ByteParser::from(ng_bytes)).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid NamedGroupList NamedGroup",
+                    )
+                })?,
+            );
             i += 2
         }
 
@@ -759,13 +839,18 @@ impl ByteSerializable for KeyShareEntry {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // NOTE: I am not sure if this is a good idea to do unchecked
-        let named_group = *NamedGroup::from_bytes(bytes).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid KeyShareEntry NamedGroup",
-            )
+        // NOTE: I am not sure if this is a good idea
+        let ng_bytes = bytes.get_bytes(2).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid named group bytes")
         })?;
+
+        let named_group =
+            *NamedGroup::from_bytes(&mut ByteParser::from(ng_bytes)).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid KeyShareEntry NamedGroup",
+                )
+            })?;
 
         // 2 byte length determinant for the `key_exchange`
         let length = bytes.get_u16().ok_or_else(|| {
@@ -826,6 +911,13 @@ impl ByteSerializable for KeyShareClientHello {
                 "Invalid client shares length",
             )
         })?;
+
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "KeyShareClientHello: list_length and byte.len() mismatch",
+            ));
+        }
 
         // NOTE: Stupid loop time
         let mut i = 0;
@@ -921,11 +1013,17 @@ impl ByteSerializable for PskKeyExchangeModes {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid ke modes length")
         })?;
 
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "PskeyExhangeModes: length and byte.len() mismatch",
+            ));
+        }
+
         // NOTE: Stupid loop time
         let mut i = 0;
         let mut ke_modes = Vec::new();
 
-        // NOTE: Length should be checked
         while i < length {
             // PskKeyExchangeMode value is 1 byte
             // NOTE: This feels very dumb, but I am not familiar with Rust
@@ -973,6 +1071,13 @@ impl ByteSerializable for Cookie {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid cookie length")
         })?;
 
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Cookie: list_length and byte.len() mismatch",
+            ));
+        }
+
         let cookie = bytes.get_bytes(length as usize).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1015,6 +1120,17 @@ mod tests {
         assert!(matches!(
             Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
             Err(ref e) if e.to_string() == "Invalid extension data length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x20, 0x00, 0x00, 0x00]);
+        assert!(Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client,).is_err());
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Extension::from_bytes(&mut bytes.clone(), ExtensionOrigin::Client),
+            Err(ref e) if e.to_string() == "Extension: ext_data_len and byte.len() mismatch"
         ));
 
         let bytes = ByteParser::from(vec![0x0F, 0x01, 0xDC, 0xFF]);
@@ -1223,6 +1339,17 @@ mod tests {
         ));
 
         // VersionKind::Suggested
+        let bytes = ByteParser::from(vec![0x01, 0x02, 0x03, 0x01]);
+        assert!(SupportedVersions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedVersions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "SupportedVersions: list_length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![0x04, 0x02, 0x03, 0x01]);
         assert!(SupportedVersions::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1312,7 +1439,7 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid server name list length"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
         assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             ServerNameList::from_bytes(&mut bytes.clone()),
@@ -1320,10 +1447,21 @@ mod tests {
         ));
         assert!(matches!(
             ServerNameList::from_bytes(&mut bytes.clone()),
-            Err(ref e) if e.to_string() == "Invalid server name name type"
+            Err(ref e) if e.to_string() == "ServerNameList: list_length and byte.len() mismatch"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00, 0x00]);
+        let bytes = ByteParser::from(vec![0x00, 0x01, 0x01]);
+        assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerNameList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid server name name_type"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x02, 0x00, 0x00]);
         assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             ServerNameList::from_bytes(&mut bytes.clone()),
@@ -1334,7 +1472,7 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid server name host name length"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00, 0x00, 0x01]);
+        let bytes = ByteParser::from(vec![0x00, 0x03, 0x00, 0x00, 0x01]);
         assert!(ServerNameList::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             ServerNameList::from_bytes(&mut bytes.clone()),
@@ -1381,6 +1519,17 @@ mod tests {
         );
 
         // Negative
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(SignatureScheme::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SignatureScheme::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SignatureScheme::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "SupportedSignatureAlgorithms: list_length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![]);
         assert!(SignatureScheme::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1416,7 +1565,7 @@ mod tests {
                 ]
             },
             &[0x00, 0x04, 0x05, 0x03, 0x06, 0x03]
-        );
+        ); // Unreachable error
 
         // Negative
         let bytes = ByteParser::from(vec![0x00]);
@@ -1430,7 +1579,29 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid supported signature algorithms length"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "SupportedSignatureAlgorithms: list_length and byte.len() mismatch"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00]);
+        assert!(SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid signature scheme bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x02, 0x00, 0x00]);
         assert!(SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             SupportedSignatureAlgorithms::from_bytes(&mut bytes.clone()),
@@ -1470,6 +1641,17 @@ mod tests {
         round_trip!(NamedGroup, NamedGroup::X25519, &[0x00, 0x1D]);
 
         // Negative
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(NamedGroup::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroup::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroup::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "NamedGroup: list_length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![]);
         assert!(NamedGroup::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1516,7 +1698,29 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid named group list length"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x01]);
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(NamedGroupList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "NamedGroupList: list_length and byte.len() mismatch"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x01, 0x00]);
+        assert!(NamedGroupList::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            NamedGroupList::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid named group bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x02, 0x00, 0x00]);
         assert!(NamedGroupList::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             NamedGroupList::from_bytes(&mut bytes.clone()),
@@ -1558,6 +1762,17 @@ mod tests {
 
         // Negative
         let bytes = ByteParser::from(vec![]);
+        assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid named group bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00]);
         assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             KeyShareEntry::from_bytes(&mut bytes.clone()),
@@ -1624,6 +1839,17 @@ mod tests {
         assert!(matches!(
             KeyShareClientHello::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid client shares length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(KeyShareClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "KeyShareClientHello: list_length and byte.len() mismatch"
         ));
 
         let bytes = ByteParser::from(vec![0x00, 0x02]);
@@ -1735,6 +1961,17 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid ke modes length"
         ));
 
+        let bytes = ByteParser::from(vec![0x00, 0x00]);
+        assert!(PskKeyExchangeModes::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            PskKeyExchangeModes::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "PskeyExhangeModes: length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![0x01]);
         assert!(PskKeyExchangeModes::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1797,7 +2034,17 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid cookie length"
         ));
 
-        // Negative
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(Cookie::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Cookie::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Cookie::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Cookie: list_length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![0x00, 0x02]);
         assert!(Cookie::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
