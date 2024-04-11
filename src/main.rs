@@ -1014,8 +1014,8 @@ fn main() {
                     _ => {
                         // TODO: later
                         debug!("Handle other than Alert records");
-                        debug!("Received record: {:?}", plaintext.content_type);
-                        debug!(
+                        info!("Received record: {:?}", plaintext.content_type);
+                        info!(
                             "Record content: {:?}",
                             str::from_utf8(&plaintext.content).unwrap()
                         );
