@@ -7,10 +7,10 @@ use log::debug;
 use std::io;
 
 const RECORD_FRAGMENT_MAX_SIZE: u16 = 2u16.pow(14);
-const INNERPLAINTEXT_MAX_SIZE: u16 = 2u16.pow(14) + 8;
+const INNER_PLAINTEXT_MAX_SIZE: u16 = 2u16.pow(14) + 8;
 
 /// TLS Record Content Types
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ContentType {
     Invalid = 0,
     ChangeCipherSpec = 20,
@@ -22,7 +22,7 @@ pub enum ContentType {
 /// [TLS Record Layer](https://datatracker.ietf.org/doc/html/rfc8446#section-5.1)
 /// Application Data is always encrypted, in that case the record represents `TLSCiphertext`
 /// Message boundaries are handled differently depending on the underlying `ContentType`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TLSRecord {
     pub record_type: ContentType,
     pub legacy_record_version: ProtocolVersion, // 2 bytes to represent
@@ -59,7 +59,7 @@ impl ByteSerializable for TLSRecord {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Insufficient bytes for TLS Record record type",
-            )
+            ) // Unreachable error
         })? {
             20 => ContentType::ChangeCipherSpec,
             21 => ContentType::Alert,
@@ -72,7 +72,7 @@ impl ByteSerializable for TLSRecord {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Insufficient bytes for TLS Record legacy record version",
-            )
+            ) // Unreachable error
         })?;
 
         // Max size for single block is 2^14 https://datatracker.ietf.org/doc/html/rfc8446#section-5.1
@@ -83,7 +83,7 @@ impl ByteSerializable for TLSRecord {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Insufficient bytes for TLS Record length",
-            )
+            ) // Unreachable error
         })?;
 
         debug!("TLS Record defined length: {}", length);
@@ -100,7 +100,7 @@ impl ByteSerializable for TLSRecord {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Invalid TLS Record length: buffer overflow",
-                )
+                ) // Unreachable error
             })?;
 
             Ok(Box::from(TLSRecord {
@@ -128,7 +128,7 @@ impl ByteSerializable for TLSRecord {
 }
 
 /// Data structure for the decrypted content of a TLS Record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TLSInnerPlaintext {
     pub content: Vec<u8>, // The full encoded TLSInnerPlaintext MUST NOT exceed 2^14 + 1 octets.
     pub content_type: ContentType, // Inner content type of the decrypted content
@@ -151,7 +151,7 @@ impl ByteSerializable for TLSInnerPlaintext {
         // The length MUST NOT exceed 2^14 + 1 octets.
         // An endpoint that receives a record that exceeds this length MUST
         // terminate the connection with a "unexpected_message" alert.
-        if length > INNERPLAINTEXT_MAX_SIZE as usize {
+        if length > INNER_PLAINTEXT_MAX_SIZE as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Invalid TLSInnerPlaintext: record overflow",
@@ -170,18 +170,27 @@ impl ByteSerializable for TLSInnerPlaintext {
 
         debug!("TLSInnerPlaintext padding size: {}", padding_size);
 
+        let (content_length, is_err) = (length - padding_size).overflowing_sub(1);
+
+        if is_err {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "TLSInnerPlaintext content: length overflow",
+            ));
+        }
+
         // Minus 1 byte for content_type
-        let content = bytes.get_bytes(length - padding_size - 1).ok_or_else(|| {
+        let content = bytes.get_bytes(content_length).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "TLSInnerPlaintext content: buffer overflow",
-            )
+            ) // Unreachable error
         })?;
         let content_type = match bytes.get_u8().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Insufficient bytes for TLSInnerPlaintext record type",
-            )
+            ) // Unreachable error
         })? {
             20 => ContentType::ChangeCipherSpec,
             21 => ContentType::Alert,
@@ -197,7 +206,7 @@ impl ByteSerializable for TLSInnerPlaintext {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "TLSInnerPlaintext zeros: buffer overflow",
-            )
+            ) // Unreachable error
         })?;
 
         Ok(Box::new(TLSInnerPlaintext {
@@ -205,5 +214,103 @@ impl ByteSerializable for TLSInnerPlaintext {
             content_type,
             zeros,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // NOTE: ExtensionData tests not included due to incomplete implementation of from_bytes()
+    use super::*;
+    use crate::{handshake::TLS_VERSION_COMPATIBILITY, round_trip};
+
+    #[test]
+    fn test_tls_record() {
+        // Positive
+        round_trip!(
+            TLSRecord,
+            TLSRecord {
+                record_type: ContentType::ChangeCipherSpec,
+                legacy_record_version: TLS_VERSION_COMPATIBILITY,
+                length: 12 as u16,
+                fragment: vec![
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+                ]
+            },
+            &[
+                0x14, 0x03, 0x03, 0x00, 0x0C, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                0x09, 0x0A, 0x0B
+            ]
+        );
+
+        // Negative
+        let bytes = ByteParser::from(vec![]);
+        assert!(TLSRecord::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "TLS Record length too short: 0"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00]);
+        assert!(TLSRecord::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid TLS Record: record overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00, 0x00, 0x02, 0x00]);
+        assert!(TLSRecord::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "TLS Record: length and fragment size mismatch"
+        ));
+    }
+
+    #[test]
+    fn test_tls_inner_plaintext() {
+        // Positive
+        round_trip!(
+            TLSInnerPlaintext,
+            TLSInnerPlaintext {
+                content: vec![0x03, 0x04, 0x02, 0x01],
+                content_type: ContentType::ApplicationData,
+                zeros: vec![0x00, 0x00, 0x00, 0x00]
+            },
+            &[0x03, 0x04, 0x02, 0x01, 0x17, 0x00, 0x00, 0x00, 0x00]
+        );
+
+        // Negative
+        let bytes = ByteParser::from([1u8; (INNER_PLAINTEXT_MAX_SIZE + 1) as usize].to_vec());
+        assert!(TLSInnerPlaintext::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid TLSInnerPlaintext: record overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![]);
+        assert!(TLSInnerPlaintext::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "TLSInnerPlaintext content: length overflow"
+        ));
     }
 }
