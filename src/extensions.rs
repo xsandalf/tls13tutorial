@@ -135,7 +135,7 @@ impl Extension {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Invalid extension data",
-                ));
+                )); // Unreachable error
             }
         };
 
