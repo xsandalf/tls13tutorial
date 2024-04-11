@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read as SocketRead, Write as SocketWrite};
 use std::net::TcpStream;
 use std::str;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::vec;
 use tls13tutorial::alert::Alert;
@@ -234,25 +235,29 @@ impl HandshakeKeys {
 /// Process the data from TCP stream in the chunks of 4096 bytes and
 /// read the response data into a buffer in a form of Queue for easier parsing.
 fn process_tcp_stream(mut stream: &mut TcpStream) -> io::Result<VecDeque<u8>> {
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     let mut reader = io::BufReader::new(&mut stream);
     let mut buffer: VecDeque<u8> = VecDeque::new();
-
-    //loop {
-    info!("Loop Loop Loop");
     let mut chunk = [0; 4096];
-    match reader.read(&mut chunk) {
-        Ok(0) => info!("Okay"), //break, // Connection closed by the sender
-        Ok(n) => {
-            info!("Received {n} bytes of data.");
-            buffer.extend(&chunk[..n]);
-        }
-        Err(e) => {
-            error!("Error when reading from the TCP stream: {}", e);
-            return Err(e);
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break, // End of data
+            Ok(n) => {
+                debug!("Received {n} bytes of data.");
+                buffer.extend(&chunk[..n]);
+            }
+            // Nothing to read and no null termination
+            // We don't wait more than 0.5 seconds
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                warn!("TCP read blocking for more than 0.5 seconds...force return.");
+                return Ok(buffer);
+            }
+            Err(e) => {
+                error!("Error when reading from the TCP stream: {}", e);
+                return Err(e);
+            }
         }
     }
-    //}
-    info!("No Loop");
     Ok(buffer)
 }
 
