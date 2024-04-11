@@ -219,7 +219,6 @@ impl ByteSerializable for TLSInnerPlaintext {
 
 #[cfg(test)]
 mod tests {
-    // NOTE: ExtensionData tests not included due to incomplete implementation of from_bytes()
     use super::*;
     use crate::{handshake::TLS_VERSION_COMPATIBILITY, round_trip};
 
