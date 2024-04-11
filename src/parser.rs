@@ -99,7 +99,6 @@ impl From<&[u8]> for ByteParser {
 
 #[cfg(test)]
 mod tests {
-    // NOTE: ExtensionData tests not included due to incomplete implementation of from_bytes()
     use super::*;
 
     #[test]
