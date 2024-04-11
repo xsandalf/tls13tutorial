@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use hmac::digest::MacError;
 use log::{debug, error, info, warn};
 use pretty_assertions::assert_eq;
 #[cfg(not(debug_assertions))]
@@ -550,6 +551,21 @@ fn calculate_verify_data(
     Ok(result.into_bytes().to_vec())
 }
 
+// Validate verify_data in server Handshake Finished message
+fn validate_verify_data(
+    handshake_keys: &mut HandshakeKeys,
+    transcript_hash: &[u8],
+    verify_data: Vec<u8>,
+) -> Result<(), MacError> {
+    // Create SHA256 HMAC
+    let mut hmac = <HmacSha256 as Mac>::new_from_slice(&handshake_keys.server_hs_finished_key)
+        .expect("Failed to initiate HMAC with key");
+
+    hmac.update(&transcript_hash);
+
+    hmac.verify_slice(&verify_data)
+}
+
 /// Main event loop for the TLS 1.3 client implementation
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -802,29 +818,20 @@ fn main() {
                                             )
                                         }
                                         HandshakeMessage::Finished(finished) => {
-                                            // Create SHA256 HMAC
-                                            let mut hmac = <HmacSha256 as Mac>::new_from_slice(
-                                                &handshake_keys.server_hs_finished_key,
-                                            )
-                                            .expect("Failed to initiate HMAC with key");
-
                                             let transcript_hash = sha256.clone().finalize();
 
-                                            hmac.update(&transcript_hash);
-                                            debug!(
-                                                "HMAC: {:?}",
-                                                hmac.clone()
-                                                    .verify_slice(&finished.verify_data)
-                                                    .is_ok()
-                                            );
-
-                                            // TODO: Terminate with "decrypt_error" if HMAC verify is false
-                                            let result = hmac.finalize().into_bytes();
-                                            debug!(
-                                                "1 message: {:?}",
-                                                to_hex(&finished.verify_data)
-                                            );
-                                            debug!("2 message: {:?}", to_hex(&result));
+                                            let _result = validate_verify_data(
+                                                &mut handshake_keys,
+                                                &transcript_hash,
+                                                finished.verify_data.clone(),
+                                            )
+                                            .map_err(|_| {
+                                                // TODO: Terminate with "decrypt_error"
+                                                std::io::Error::new(
+                                                    std::io::ErrorKind::InvalidData,
+                                                    "Invalid Server Finished verify_data",
+                                                )
+                                            });
                                         }
                                         _ => {
                                             // TODO: Add something here? :D
