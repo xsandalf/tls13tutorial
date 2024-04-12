@@ -790,8 +790,49 @@ fn main() {
                                 let mut cert_data = Vec::new();
 
                                 while !content_bytes.is_empty() {
-                                    let handshake = *Handshake::from_bytes(&mut content_bytes)
-                                        .expect("Failed to parse Handshake message");
+                                    let len = content_bytes.len();
+
+                                    // NOTE: Very stupid, but had to add couple error checks due changes made to Handshake
+                                    // in order to make it fuzzing safe
+                                    if len < 4 {
+                                        todo!("Throw the right Alert and disconnect")
+                                    }
+
+                                    // NOTE: This is so dumb
+                                    let mut c_bytes = content_bytes.clone();
+                                    let _ = c_bytes
+                                        .get_u8()
+                                        .ok_or_else(|| {
+                                            std::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                "Invalid Handshake Type",
+                                            )
+                                        })
+                                        .unwrap();
+
+                                    let hs_length = c_bytes
+                                        .get_u24()
+                                        .ok_or_else(|| {
+                                            std::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                "Invalid Handshake Length",
+                                            )
+                                        })
+                                        .unwrap();
+
+                                    let hs_bytes = content_bytes
+                                        .get_bytes((hs_length + 4) as usize)
+                                        .ok_or_else(|| {
+                                            std::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                "Invalid Handshake length: buffer overflow",
+                                            )
+                                        })
+                                        .unwrap();
+
+                                    let handshake =
+                                        *Handshake::from_bytes(&mut ByteParser::from(hs_bytes))
+                                            .expect("Failed to parse Handshake message");
                                     debug!("Handshake message: {:?}", &handshake);
 
                                     // Check that Finished verify_data matches

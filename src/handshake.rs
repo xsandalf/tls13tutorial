@@ -161,6 +161,14 @@ impl ByteSerializable for Handshake {
 
         debug!("Handshake message length: {:?}", msg_length);
 
+        if bytes.len() > (msg_length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Handshake: msg_length and bytes_length mismatch",
+            ));
+        }
+
+        // TODO: Refactor unnecessary VecDeque spaghetti
         let mut hs_bytes = ByteParser::new(VecDeque::from(
             bytes.get_bytes(msg_length as usize).ok_or_else(|| {
                 std::io::Error::new(
@@ -284,6 +292,14 @@ impl ByteSerializable for Finished {
 
         // TODO: Check HMAC in use and choose length based on it
         let length = 32;
+
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Finished: length and byte.len() mismatch",
+            ));
+        }
+
         let verify_data = bytes.get_bytes(length as usize).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -349,7 +365,13 @@ impl ClientHello {
 
     #[allow(clippy::unused_self)]
     fn compression_methods_bytes(&self) -> Vec<u8> {
-        vec![0x01, 0x00] // TLS 1.3 does not support compression
+        // NOTE: Assumption, not fuzzing safe
+        //vec![0x01, 0x00] // TLS 1.3 does not support compression
+        let mut bytes = Vec::new();
+        #[allow(clippy::cast_possible_truncation)]
+        bytes.push(self.legacy_compression_methods.len() as u8);
+        bytes.extend_from_slice(&self.legacy_compression_methods.as_slice());
+        bytes
     }
 
     fn extensions_bytes(&self) -> Option<Vec<u8>> {
@@ -378,7 +400,6 @@ impl ByteSerializable for ClientHello {
     }
 
     fn from_bytes(bytes: &mut ByteParser) -> std::io::Result<Box<Self>> {
-        // TODO: Untest. todo!("Implement ClientHello::from_bytes")
         #[allow(unused)]
         let checksum: VecDeque<u8>;
 
@@ -387,12 +408,17 @@ impl ByteSerializable for ClientHello {
             checksum = bytes.deque.clone();
         }
 
+        let bytes_length: usize = bytes.len();
+        let mut total_length: usize = 0;
+
         let legacy_version = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ClientHello legacy version",
             )
         })?;
+
+        total_length += 2;
 
         let random: Random = bytes
             .get_bytes(32)
@@ -410,12 +436,16 @@ impl ByteSerializable for ClientHello {
                 )
             })?;
 
+        total_length += 32;
+
         let session_id_length = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ClientHello session id length",
             )
         })?;
+
+        total_length += (session_id_length as usize) + 1;
 
         let session_id = bytes.get_bytes(session_id_length as usize).ok_or_else(|| {
             std::io::Error::new(
@@ -431,6 +461,8 @@ impl ByteSerializable for ClientHello {
             )
         })?;
 
+        total_length += (cipher_suites_length as usize) + 2;
+
         let mut ciph_suites = Vec::new();
         let cipher_suite_bytes =
             bytes
@@ -442,6 +474,7 @@ impl ByteSerializable for ClientHello {
                     )
                 })?;
 
+        // TODO: Refactor unnecessary VecDeque spaghetti
         let mut cs_parser = ByteParser::new(VecDeque::from(cipher_suite_bytes));
 
         while !cs_parser.deque.is_empty() {
@@ -461,6 +494,8 @@ impl ByteSerializable for ClientHello {
             )
         })?;
 
+        total_length += (compression_methods_length as usize) + 1;
+
         let compression_methods = bytes
             .get_bytes(compression_methods_length as usize)
             .ok_or_else(|| {
@@ -477,6 +512,15 @@ impl ByteSerializable for ClientHello {
             )
         })?;
 
+        total_length += (extension_length as usize) + 2;
+
+        if bytes_length > total_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ClientHello: total_length and bytes_length mismatch",
+            ));
+        }
+
         let mut extensions = Vec::new();
         let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
             std::io::Error::new(
@@ -485,16 +529,58 @@ impl ByteSerializable for ClientHello {
             )
         })?;
 
+        // TODO: Refactor unnecessary VecDeque spaghetti
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
-            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Client)
-                .map_err(|_| {
+            // NOTE: Stupid but it is a start
+            let len = ext_parser.len();
+
+            // NOTE: Very stupid, but had to add couple error checks due changes made to Extension
+            // in order to make it fuzzing safe
+            if len < 4 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ClientHello Extension bytes",
+                ));
+            }
+
+            // NOTE: This is so dumb
+            let mut e_bytes = ext_parser.clone();
+
+            let _ = e_bytes
+                .get_u16()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Type")
+                })
+                .unwrap();
+
+            let ext_length = e_bytes
+                .get_u16()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Length")
+                })
+                .unwrap();
+
+            //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+
+            let ext_bytes = ext_parser
+                .get_bytes((ext_length as usize) + 4)
+                .ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "Invalid ClientHello Extension",
+                        "Invalid ClientHello Extension length: buffer overflow",
                     )
                 })?;
+
+            let extension =
+                Extension::from_bytes(&mut ByteParser::from(ext_bytes), ExtensionOrigin::Client)
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid ClientHello Extension",
+                        )
+                    })?;
             extensions.push(*extension);
         }
 
@@ -559,12 +645,17 @@ impl ByteSerializable for ServerHello {
             checksum = bytes.deque.clone();
         }
 
+        let bytes_length: usize = bytes.len();
+        let mut total_length: usize = 0;
+
         let legacy_version = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ServerHello legacy version",
             )
         })?;
+
+        total_length += 2;
 
         let random: Random = bytes
             .get_bytes(32)
@@ -582,12 +673,16 @@ impl ByteSerializable for ServerHello {
                 )
             })?;
 
+        total_length += 32;
+
         let session_id_length = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ServerHello session id length",
             )
         })?;
+
+        total_length += (session_id_length as usize) + 1;
 
         let session_id = bytes.get_bytes(session_id_length as usize).ok_or_else(|| {
             std::io::Error::new(
@@ -606,6 +701,8 @@ impl ByteSerializable for ServerHello {
             })?
             .into();
 
+        total_length += 2;
+
         let compression_method = bytes.get_u8().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -613,12 +710,23 @@ impl ByteSerializable for ServerHello {
             )
         })?;
 
+        total_length += 1;
+
         let extension_length = bytes.get_u16().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid ServerHello extension length",
             )
         })?;
+
+        total_length += (extension_length as usize) + 2;
+
+        if bytes_length > total_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ServerHello: total_length and bytes_length mismatch",
+            ));
+        }
 
         let mut extensions = Vec::new();
         let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
@@ -628,16 +736,58 @@ impl ByteSerializable for ServerHello {
             )
         })?;
 
+        // TODO: Refactor unnecessary VecDeque spaghetti
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
-            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)
-                .map_err(|_| {
+            // NOTE: Stupid but it is a start
+            let len = ext_parser.len();
+
+            // NOTE: Very stupid, but had to add couple error checks due changes made to Extension
+            // in order to make it fuzzing safe
+            if len < 4 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid ServerHello Extension bytes",
+                ));
+            }
+
+            // NOTE: This is so dumb
+            let mut e_bytes = ext_parser.clone();
+
+            let _ = e_bytes
+                .get_u16()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Type")
+                })
+                .unwrap();
+
+            let ext_length = e_bytes
+                .get_u16()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Length")
+                })
+                .unwrap();
+
+            //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+
+            let ext_bytes = ext_parser
+                .get_bytes((ext_length as usize) + 4)
+                .ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "Invalid ServerHello Extension",
+                        "Invalid ServerHello Extension length: buffer overflow",
                     )
                 })?;
+
+            let extension =
+                Extension::from_bytes(&mut ByteParser::from(ext_bytes), ExtensionOrigin::Server)
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid ServerHello Extension",
+                        )
+                    })?;
             extensions.push(*extension);
         }
 
@@ -731,6 +881,9 @@ impl ByteSerializable for Certificate {
             checksum = bytes.deque.clone();
         }
 
+        let bytes_length: usize = bytes.len();
+        let mut total_length: usize = 0;
+
         // TODO: Refactor, this is a mess
         // 1 byte length determinant for the certificate_request_context
         let crc_length = bytes.get_u8().ok_or_else(|| {
@@ -739,6 +892,8 @@ impl ByteSerializable for Certificate {
                 "Invalid certificate request context length",
             )
         })?;
+
+        total_length += (crc_length as usize) + 1;
 
         let crc = bytes.get_bytes(crc_length as usize).ok_or_else(|| {
             std::io::Error::new(
@@ -753,6 +908,15 @@ impl ByteSerializable for Certificate {
                 "Invalid certificate list length",
             )
         })?;
+
+        total_length += (list_length as usize) + 3;
+
+        if bytes_length > total_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Certificate: total_length and bytes_length mismatch",
+            ));
+        }
 
         // NOTE: Stupid loop time
         let mut i = 0;
@@ -790,16 +954,68 @@ impl ByteSerializable for Certificate {
                     "Invalid Certificate extensions length: buffer overflow",
                 )
             })?;
+
+            // TODO: Refactor unnecessary VecDeque spaghetti
             let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
             while !ext_parser.deque.is_empty() {
-                let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)
-                    .map_err(|_| {
+                // NOTE: Stupid but it is a start
+                let len = ext_parser.len();
+
+                // NOTE: Very stupid, but had to add couple error checks due changes made to Extension
+                // in order to make it fuzzing safe
+                if len < 4 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid Certificate Extension bytes",
+                    ));
+                }
+
+                // NOTE: This is so dumb
+                let mut e_bytes = ext_parser.clone();
+
+                let _ = e_bytes
+                    .get_u16()
+                    .ok_or_else(|| {
                         std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
-                            "Invalid Certificate Extension",
+                            "Invalid Handshake Type",
                         )
-                    })?;
+                    })
+                    .unwrap();
+
+                let ext_length = e_bytes
+                    .get_u16()
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid Handshake Length",
+                        )
+                    })
+                    .unwrap();
+
+                //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+
+                let ext_bytes =
+                    ext_parser
+                        .get_bytes((ext_length as usize) + 4)
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Invalid Certificate Extension length: buffer overflow",
+                            )
+                        })?;
+
+                let extension = Extension::from_bytes(
+                    &mut ByteParser::from(ext_bytes),
+                    ExtensionOrigin::Server,
+                )
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid Certificate Extension",
+                    )
+                })?;
                 extensions.push(*extension);
             }
 
@@ -813,8 +1029,8 @@ impl ByteSerializable for Certificate {
             });
 
             // NOTE: Dumb
-            // 1 for certificate_type, 3 for certificate_data length, 2 for extensions length
-            i += 1 + 3 + cert_data_length + 2 + (extension_length as u32);
+            // 3 for certificate_data length, 2 for extensions length
+            i += 3 + cert_data_length + 2 + (extension_length as u32);
         }
 
         let certificate = Certificate {
@@ -869,6 +1085,13 @@ impl ByteSerializable for EncryptedExtensions {
             )
         })?;
 
+        if bytes.len() > (extension_length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "EncryptedExtension: extension_length and byte.len() mismatch",
+            ));
+        }
+
         let mut extensions = Vec::new();
         let extension_bytes = bytes.get_bytes(extension_length as usize).ok_or_else(|| {
             std::io::Error::new(
@@ -877,16 +1100,58 @@ impl ByteSerializable for EncryptedExtensions {
             )
         })?;
 
+        // TODO: Refactor unnecessary VecDeque spaghetti
         let mut ext_parser = ByteParser::new(VecDeque::from(extension_bytes));
 
         while !ext_parser.deque.is_empty() {
-            let extension = Extension::from_bytes(&mut ext_parser, ExtensionOrigin::Server)
-                .map_err(|_| {
+            // NOTE: Stupid but it is a start
+            let len = ext_parser.len();
+
+            // NOTE: Very stupid, but had to add couple error checks due changes made to Extension
+            // in order to make it fuzzing safe
+            if len < 4 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid Certificate Extension bytes",
+                ));
+            }
+
+            // NOTE: This is so dumb
+            let mut e_bytes = ext_parser.clone();
+
+            let _ = e_bytes
+                .get_u16()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Type")
+                })
+                .unwrap();
+
+            let ext_length = e_bytes
+                .get_u16()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Length")
+                })
+                .unwrap();
+
+            //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+
+            let ext_bytes = ext_parser
+                .get_bytes((ext_length as usize) + 4)
+                .ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "Invalid EncryptedExtensions Extension",
+                        "Invalid Certificate Extension length: buffer overflow",
                     )
                 })?;
+
+            let extension =
+                Extension::from_bytes(&mut ByteParser::from(ext_bytes), ExtensionOrigin::Server)
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid EncryptedExtensions Extension",
+                        )
+                    })?;
             extensions.push(*extension);
         }
 
@@ -928,12 +1193,21 @@ impl ByteSerializable for CertificateVerify {
             checksum = bytes.deque.clone();
         }
 
-        let signature_scheme = *SignatureScheme::from_bytes(bytes).map_err(|_| {
+        // NOTE: I am not sure if this is a good idea
+        let scheme_bytes = bytes.get_bytes(2).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid CertificateVerify SignatureScheme",
+                "Invalid signature scheme bytes",
             )
         })?;
+
+        let signature_scheme = *SignatureScheme::from_bytes(&mut ByteParser::from(scheme_bytes))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid CertificateVerify SignatureScheme",
+                )
+            })?;
 
         // 2 byte length determinant for the signature
         let length = bytes.get_u16().ok_or_else(|| {
@@ -942,6 +1216,13 @@ impl ByteSerializable for CertificateVerify {
                 "Invalid CertificateVerify signature length",
             )
         })?;
+
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CertificateVerify: length and byte.len() mismatch",
+            ));
+        }
 
         let signature = bytes.get_bytes(length as usize).ok_or_else(|| {
             std::io::Error::new(
@@ -996,6 +1277,17 @@ mod tests {
         assert!(matches!(
             Handshake::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid handshake message length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x00, 0x00]);
+        assert!(Handshake::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Handshake::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Handshake: msg_length and bytes_length mismatch"
         ));
 
         let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x01]);
@@ -1096,6 +1388,17 @@ mod tests {
         );
 
         // Negative
+        let bytes = ByteParser::from([1u8; 33 as usize].to_vec());
+        assert!(Finished::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Finished::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Finished::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Finished: length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![]);
         assert!(Finished::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1326,6 +1629,22 @@ mod tests {
             0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
             0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
             0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
+            0x00, 0x00, 0x00,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "ClientHello: total_length and bytes_length mismatch"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
             0x00, 0x01,
         ]);
         assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
@@ -1343,6 +1662,38 @@ mod tests {
             0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
             0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
             0x00, 0x01, 0x00,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello Extension bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
+            0x00, 0x04, 0x00, 0x00, 0x00, 0x01,
+        ]);
+        assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ClientHello Extension length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x00, 0x02, 0x13, 0x03, 0x01, 0x00,
+            0x00, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00,
         ]);
         assert!(ClientHello::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1537,6 +1888,21 @@ mod tests {
         let bytes = ByteParser::from(vec![
             0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
             0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "ServerHello: total_length and bytes_length mismatch"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
             0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x01,
         ]);
         assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
@@ -1553,6 +1919,38 @@ mod tests {
             0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
             0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
             0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x01, 0x00,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello Extension bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x04, 0x00,
+            0x00, 0x00, 0x01,
+        ]);
+        assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            ServerHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid ServerHello Extension length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x04, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x01, 0x00, 0x13, 0x03, 0x00, 0x00, 0x05, 0x00,
+            0x00, 0x00, 0x01, 0x01,
         ]);
         assert!(ServerHello::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1698,6 +2096,17 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid certificate list length"
         ));
 
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00, 0x00, 0x00]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Certificate: total_length and bytes_length mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![0x01, 0x00, 0x00, 0x00, 0x01]);
         assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1746,6 +2155,34 @@ mod tests {
 
         let bytes = ByteParser::from(vec![
             0x01, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
+        ]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate Extension bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x01, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+            0x01,
+        ]);
+        assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            Certificate::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate Extension length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![
+            0x01, 0x00, 0x00, 0x00, 0x0B, 0x00, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+            0x01, 0x00,
         ]);
         assert!(Certificate::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1835,6 +2272,17 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid EncryptedExtensions extension length"
         ));
 
+        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00]);
+        assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "EncryptedExtension: extension_length and byte.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![0x00, 0x01]);
         assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1847,6 +2295,28 @@ mod tests {
         ));
 
         let bytes = ByteParser::from(vec![0x00, 0x01, 0x00]);
+        assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate Extension bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x04, 0x00, 0x00, 0x00, 0x01]);
+        assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            EncryptedExtensions::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid Certificate Extension length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00]);
         assert!(EncryptedExtensions::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             EncryptedExtensions::from_bytes(&mut bytes.clone()),
@@ -1909,6 +2379,17 @@ mod tests {
         ));
         assert!(matches!(
             CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid signature scheme bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x00]);
+        assert!(CertificateVerify::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid CertificateVerify SignatureScheme"
         ));
 
@@ -1921,6 +2402,17 @@ mod tests {
         assert!(matches!(
             CertificateVerify::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid CertificateVerify signature length"
+        ));
+
+        let bytes = ByteParser::from(vec![0x04, 0x01, 0x00, 0x00, 0x00]);
+        assert!(CertificateVerify::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            CertificateVerify::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "CertificateVerify: length and byte.len() mismatch"
         ));
 
         let bytes = ByteParser::from(vec![0x04, 0x01, 0x00, 0x01]);
