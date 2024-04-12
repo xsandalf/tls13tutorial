@@ -397,6 +397,7 @@ impl std::fmt::Display for ServerName {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum NameType {
     HostName = 0,
+    HackName = 255, // For the hack fix
 }
 
 /// `HostName` is a byte string using ASCII encoding of host without a trailing dot
@@ -428,7 +429,7 @@ impl ByteSerializable for ServerNameList {
         // If server_name_list is empty, assume above and return Ok
         // TODO: Create seperate extension for when server sends ServerNameList,
         // same way as KeyShareClientHello and KeyShareServerHello
-        // NOTE: This causes issues when fuzzing, comment it out for now
+        // NOTE: This causes issues when fuzzing
         // Cause of the issue as_bytes(from_bytes(vec![0x00, 0x00])) == [], obviously [0x00, 0x00] != []
         // If you fix above by returning [0x00, 0x00] in as_bytes when server_name_list is empty, then
         // as_bytes(from_bytes(vec![])) == [0x00, 0x00 ], obviously [] != [0x00, 0x00]
@@ -437,6 +438,11 @@ impl ByteSerializable for ServerNameList {
         }
 
         for server_name in &self.server_name_list {
+            // NOTE: Hack fix for the issue presented above
+            if server_name.name_type == NameType::HackName {
+                bytes.extend_from_slice(&[0x00, 0x00]);
+                return Some(bytes);
+            }
             bytes.push(server_name.name_type as u8);
             // 2 byte length determinant for the ASCII byte presentation of the name
             bytes.extend_from_slice(
@@ -468,7 +474,7 @@ impl ByteSerializable for ServerNameList {
         // In this event, the server SHALL include an extension of type "server_name" in the (extended) server hello.
         // The "extension_data" field of this extension SHALL be empty.
         // If bytes is empty, assume above and return Ok
-        // NOTE: This causes issues when fuzzing, comment it out for now
+        // NOTE: This causes issues when fuzzing
         // Cause of the issue as_bytes(from_bytes(vec![0x00, 0x00])) == [], obviously [0x00, 0x00] != []
         // If you fix above by returning [0x00, 0x00] in as_bytes when server_name_list is empty, then
         // as_bytes(from_bytes(vec![])) == [0x00, 0x00 ], obviously [] != [0x00, 0x00]
@@ -491,6 +497,16 @@ impl ByteSerializable for ServerNameList {
                 std::io::ErrorKind::InvalidData,
                 "ServerNameList: list_length and byte.len() mismatch",
             ));
+        }
+
+        // NOTE: Hack fix for the issue presented above
+        if list_length == 0 {
+            return Ok(Box::new(ServerNameList {
+                server_name_list: vec![ServerName {
+                    name_type: NameType::HackName,
+                    host_name: Vec::<u8>::new(),
+                }],
+            }));
         }
 
         // NOTE: Stupid loop time
@@ -860,6 +876,13 @@ impl ByteSerializable for KeyShareEntry {
             )
         })?;
 
+        if bytes.len() > (length as usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "KeyShareEntry: length and bytes.len() mismatch",
+            ));
+        }
+
         let key_exchange = bytes.get_bytes(length as usize).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -923,18 +946,36 @@ impl ByteSerializable for KeyShareClientHello {
         let mut i = 0;
         let mut key_shares = Vec::new();
 
-        // NOTE: Length should be checked
         while i < length {
             // NOTE: Stupid but it is a start part 1
             let len = bytes.len();
 
-            // NOTE: I am not sure if this is a good idea
-            key_shares.push(*KeyShareEntry::from_bytes(bytes).map_err(|_| {
+            if len < 4 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid KeyShareClientHello KeyShareEntry bytes",
+                ));
+            }
+
+            // NOTE: Very stupid
+            let kse_length: u16 = (bytes.deque[2] as u16) + (bytes.deque[3] as u16);
+
+            let kse_bytes = bytes.get_bytes((kse_length + 4) as usize).ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "Invalid KeyShareClientHello KeyShareEntry",
+                    "Invalid KeyShareClientHello KeyShareEntry length: buffer overflow",
                 )
-            })?);
+            })?;
+
+            // NOTE: I am not sure if this is a good idea
+            key_shares.push(
+                *KeyShareEntry::from_bytes(&mut ByteParser::from(kse_bytes)).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid KeyShareClientHello KeyShareEntry",
+                    )
+                })?,
+            );
 
             // NOTE: Stupid but it is a start part 2
             i += (len - bytes.len()) as u16
@@ -1794,6 +1835,17 @@ mod tests {
             Err(ref e) if e.to_string() == "Invalid key exchange length"
         ));
 
+        let bytes = ByteParser::from(vec![0x00, 0x17, 0x00, 0x00, 0x00]);
+        assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareEntry::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "KeyShareEntry: length and bytes.len() mismatch"
+        ));
+
         let bytes = ByteParser::from(vec![0x00, 0x17, 0x00, 0x01]);
         assert!(KeyShareEntry::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
@@ -1852,7 +1904,29 @@ mod tests {
             Err(ref e) if e.to_string() == "KeyShareClientHello: list_length and byte.len() mismatch"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x02]);
+        let bytes = ByteParser::from(vec![0x00, 0x02, 0x00]);
+        assert!(KeyShareClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid KeyShareClientHello KeyShareEntry bytes"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x04, 0x00, 0x00, 0x00, 0x01]);
+        assert!(KeyShareClientHello::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            KeyShareClientHello::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "Invalid KeyShareClientHello KeyShareEntry length: buffer overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x00, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00]);
         assert!(KeyShareClientHello::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             KeyShareClientHello::from_bytes(&mut bytes.clone()),
