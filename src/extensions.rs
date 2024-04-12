@@ -950,6 +950,8 @@ impl ByteSerializable for KeyShareClientHello {
             // NOTE: Stupid but it is a start part 1
             let len = bytes.len();
 
+            // NOTE: Very stupid, but had to add couple error checks due changes made to KeyShareEntry
+            // in order to make it fuzzing safe
             if len < 4 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -957,7 +959,6 @@ impl ByteSerializable for KeyShareClientHello {
                 ));
             }
 
-            // NOTE: Very stupid
             let kse_length: u16 = (bytes.deque[2] as u16) + (bytes.deque[3] as u16);
 
             let kse_bytes = bytes.get_bytes((kse_length + 4) as usize).ok_or_else(|| {
