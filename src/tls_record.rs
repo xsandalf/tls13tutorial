@@ -68,6 +68,13 @@ impl ByteSerializable for TLSRecord {
             _ => ContentType::Invalid,
         };
 
+        if record_type == ContentType::Invalid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "TLSRecord ContentType: Invalid",
+            ));
+        }
+
         let legacy_record_version = bytes.get_u16().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -96,19 +103,10 @@ impl ByteSerializable for TLSRecord {
         }
 
         if bytes.len() > length as usize {
-            let fragment = bytes.get_bytes(length as usize).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid TLS Record length: buffer overflow",
-                ) // Unreachable error
-            })?;
-
-            Ok(Box::from(TLSRecord {
-                record_type,
-                legacy_record_version,
-                length,
-                fragment,
-            }))
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TLSRecord: lenght and bytes.len() mismatch",
+            ));
         } else {
             if bytes.len() != length as usize {
                 return Err(io::Error::new(
@@ -170,6 +168,7 @@ impl ByteSerializable for TLSInnerPlaintext {
 
         debug!("TLSInnerPlaintext padding size: {}", padding_size);
 
+        // Minus 1 byte for content_type
         let (content_length, is_err) = (length - padding_size).overflowing_sub(1);
 
         if is_err {
@@ -179,13 +178,13 @@ impl ByteSerializable for TLSInnerPlaintext {
             ));
         }
 
-        // Minus 1 byte for content_type
         let content = bytes.get_bytes(content_length).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "TLSInnerPlaintext content: buffer overflow",
             ) // Unreachable error
         })?;
+
         let content_type = match bytes.get_u8().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -200,6 +199,13 @@ impl ByteSerializable for TLSInnerPlaintext {
         };
 
         debug!("TLSInnerPlaintext content type: {}", content_type as u8);
+
+        if content_type == ContentType::Invalid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "TLSInnerPlaintext ContentType: Invalid",
+            ));
+        }
 
         // Remove zero padding from buffer
         let zeros = bytes.get_bytes(padding_size).ok_or_else(|| {
@@ -261,10 +267,21 @@ mod tests {
         ));
         assert!(matches!(
             TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "TLSRecord ContentType: Invalid"
+        ));
+
+        let bytes = ByteParser::from(vec![0x14, 0x00, 0x00, 0xFF, 0xFF, 0x00]);
+        assert!(TLSRecord::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSRecord::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "Invalid TLS Record: record overflow"
         ));
 
-        let bytes = ByteParser::from(vec![0x00, 0x00, 0x00, 0x00, 0x02, 0x00]);
+        let bytes = ByteParser::from(vec![0x14, 0x00, 0x00, 0x00, 0x02, 0x00]);
         assert!(TLSRecord::from_bytes(&mut bytes.clone(),).is_err());
         assert!(matches!(
             TLSRecord::from_bytes(&mut bytes.clone()),
@@ -310,6 +327,17 @@ mod tests {
         assert!(matches!(
             TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
             Err(ref e) if e.to_string() == "TLSInnerPlaintext content: length overflow"
+        ));
+
+        let bytes = ByteParser::from(vec![0x0A]);
+        assert!(TLSInnerPlaintext::from_bytes(&mut bytes.clone(),).is_err());
+        assert!(matches!(
+            TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(matches!(
+            TLSInnerPlaintext::from_bytes(&mut bytes.clone()),
+            Err(ref e) if e.to_string() == "TLSInnerPlaintext ContentType: Invalid"
         ));
     }
 }

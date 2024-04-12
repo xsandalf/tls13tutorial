@@ -959,22 +959,8 @@ impl ByteSerializable for KeyShareClientHello {
                 ));
             }
 
-            // NOTE: This is so dumb
-            let mut b = bytes.clone();
-
-            let _ = b.get_u16().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid KeyShareClientHello KeyShareEntry length: buffer overflow",
-                ) // Unreachable error
-            })?;
-
-            let kse_length = b.get_u16().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid KeyShareClientHello KeyShareEntry length: buffer overflow",
-                ) // Unreachable error
-            })?;
+            let kse_length =
+                ((bytes.deque[2].clone() as u16) << 8) | (bytes.deque[3].clone() as u16);
 
             let kse_bytes = bytes.get_bytes((kse_length as usize) + 4).ok_or_else(|| {
                 std::io::Error::new(

@@ -798,30 +798,12 @@ fn main() {
                                         todo!("Throw the right Alert and disconnect")
                                     }
 
-                                    // NOTE: This is so dumb
-                                    let mut c_bytes = content_bytes.clone();
-                                    let _ = c_bytes
-                                        .get_u8()
-                                        .ok_or_else(|| {
-                                            std::io::Error::new(
-                                                std::io::ErrorKind::InvalidData,
-                                                "Invalid Handshake Type",
-                                            )
-                                        })
-                                        .unwrap();
-
-                                    let hs_length = c_bytes
-                                        .get_u24()
-                                        .ok_or_else(|| {
-                                            std::io::Error::new(
-                                                std::io::ErrorKind::InvalidData,
-                                                "Invalid Handshake Length",
-                                            )
-                                        })
-                                        .unwrap();
+                                    let hs_length = ((content_bytes.deque[1].clone() as u32) << 16)
+                                        | ((content_bytes.deque[2].clone() as u32) << 8)
+                                        | (content_bytes.deque[3].clone() as u32);
 
                                     let hs_bytes = content_bytes
-                                        .get_bytes((hs_length + 4) as usize)
+                                        .get_bytes((hs_length as usize) + 4)
                                         .ok_or_else(|| {
                                             std::io::Error::new(
                                                 std::io::ErrorKind::InvalidData,

@@ -27,7 +27,21 @@ pub fn get_records(buffer: VecDeque<u8>) -> Result<Vec<TLSRecord>, io::Error> {
     let mut records = Vec::new();
     let mut parser = ByteParser::new(buffer);
     while !parser.deque.is_empty() {
-        match TLSRecord::from_bytes(&mut parser) {
+        if parser.len() < 4 {
+            error!("Failed to receive a valid TLS Record");
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("TLS Record length too short"),
+            ));
+        }
+        let len = ((parser.deque[3].clone() as u16) << 8) | (parser.deque[4].clone() as u16);
+        let record_bytes = parser.get_bytes((len as usize) + 5).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid TLSRecord length: buffer overflow",
+            )
+        })?;
+        match TLSRecord::from_bytes(&mut ByteParser::from(record_bytes)) {
             Ok(response) => {
                 info!("Response TLS Record received!");
                 records.push(*response);
@@ -72,6 +86,10 @@ mod tests {
         }
 
         // Negative
+        let mut vc = VecDeque::new();
+        vc.extend([0x00]);
+        assert!(get_records(vc).is_err());
+
         let mut vc = VecDeque::new();
         vc.extend([
             0x14, 0x03, 0x03, 0x00, 0x0C, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,

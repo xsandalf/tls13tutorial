@@ -545,24 +545,8 @@ impl ByteSerializable for ClientHello {
                 ));
             }
 
-            // NOTE: This is so dumb
-            let mut e_bytes = ext_parser.clone();
-
-            let _ = e_bytes
-                .get_u16()
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Type")
-                })
-                .unwrap();
-
-            let ext_length = e_bytes
-                .get_u16()
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Length")
-                })
-                .unwrap();
-
-            //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+            let ext_length =
+                ((ext_parser.deque[2].clone() as u16) << 8) | (ext_parser.deque[3].clone() as u16);
 
             let ext_bytes = ext_parser
                 .get_bytes((ext_length as usize) + 4)
@@ -752,24 +736,8 @@ impl ByteSerializable for ServerHello {
                 ));
             }
 
-            // NOTE: This is so dumb
-            let mut e_bytes = ext_parser.clone();
-
-            let _ = e_bytes
-                .get_u16()
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Type")
-                })
-                .unwrap();
-
-            let ext_length = e_bytes
-                .get_u16()
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Length")
-                })
-                .unwrap();
-
-            //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+            let ext_length =
+                ((ext_parser.deque[2].clone() as u16) << 8) | (ext_parser.deque[3].clone() as u16);
 
             let ext_bytes = ext_parser
                 .get_bytes((ext_length as usize) + 4)
@@ -971,30 +939,8 @@ impl ByteSerializable for Certificate {
                     ));
                 }
 
-                // NOTE: This is so dumb
-                let mut e_bytes = ext_parser.clone();
-
-                let _ = e_bytes
-                    .get_u16()
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid Handshake Type",
-                        )
-                    })
-                    .unwrap();
-
-                let ext_length = e_bytes
-                    .get_u16()
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid Handshake Length",
-                        )
-                    })
-                    .unwrap();
-
-                //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+                let ext_length = ((ext_parser.deque[2].clone() as u16) << 8)
+                    | (ext_parser.deque[3].clone() as u16);
 
                 let ext_bytes =
                     ext_parser
@@ -1116,24 +1062,8 @@ impl ByteSerializable for EncryptedExtensions {
                 ));
             }
 
-            // NOTE: This is so dumb
-            let mut e_bytes = ext_parser.clone();
-
-            let _ = e_bytes
-                .get_u16()
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Type")
-                })
-                .unwrap();
-
-            let ext_length = e_bytes
-                .get_u16()
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Handshake Length")
-                })
-                .unwrap();
-
-            //let ext_length: u16 = (ext_parser.deque[2] as u16) + (ext_parser.deque[3] as u16);
+            let ext_length =
+                ((ext_parser.deque[2].clone() as u16) << 8) | (ext_parser.deque[3].clone() as u16);
 
             let ext_bytes = ext_parser
                 .get_bytes((ext_length as usize) + 4)
