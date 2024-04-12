@@ -946,7 +946,7 @@ impl ByteSerializable for CertificateVerify {
         let signature = bytes.get_bytes(length as usize).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid CertificateVerifty signature length: buffer overflow",
+                "Invalid CertificateVerify signature length: buffer overflow",
             )
         })?;
 
@@ -1931,7 +1931,7 @@ mod tests {
         ));
         assert!(matches!(
             CertificateVerify::from_bytes(&mut bytes.clone()),
-            Err(ref e) if e.to_string() == "Invalid CertificateVerifty signature length: buffer overflow"
+            Err(ref e) if e.to_string() == "Invalid CertificateVerify signature length: buffer overflow"
         ));
     }
 
